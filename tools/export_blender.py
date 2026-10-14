@@ -301,10 +301,23 @@ def bake_base_colors(objects, size):
         scene.render.bake.normal_b = 'POS_Z'
         # Separate passes must keep padding inside the atlas's two-pixel island gap.
         scene.render.bake.margin = 1
-        # Joining changes tangent space when objects have different nonuniform scales.
+        # Equal linear transforms preserve tangent space when joining translated parts.
+        groups = {}
         for obj in meshes:
-            select([obj])
-            bpy.ops.object.bake(type='NORMAL', uv_layer=uv_name)
+            basis = tuple(value for row in obj.matrix_world.to_3x3() for value in row)
+            groups.setdefault(basis, []).append(obj)
+        for group in groups.values():
+            helper = joined_bake_mesh(group) if len(group) > 1 else None
+            if helper:
+                try:
+                    set_active('normal', [m for m in helper.data.materials if m])
+                    bpy.ops.object.bake(type='NORMAL', uv_layer=uv_name)
+                finally:
+                    bpy.data.objects.remove(helper, do_unlink=True)
+            else:
+                for obj in group:
+                    select([obj])
+                    bpy.ops.object.bake(type='NORMAL', uv_layer=uv_name)
     print('PBR channels baked', flush=True)
 
     for material, channels in targets.items():
