@@ -4,7 +4,7 @@
 
 ## 起動
 
-Node.js 24以上を使用します。
+Node.js 24以上と Zstandard (`zstd` 1.5.5以上) を使用します。macOSは `brew install zstd`、Ubuntuは `sudo apt-get install zstd`。
 
 ```sh
 npm ci
@@ -34,6 +34,8 @@ npm run -s assetctl -- replace prop.wheel ./updated.glb --if-match '<getで取�
 npm run -s assetctl -- revisions prop.wheel
 ```
 
+GLBを別の版に置き換えると、現在の動作設定は解除されます。過去の設定ファイルは保持します。同じGLBの再取り込みでは固定版を変更せず、新しい出典・検査結果を取込記録へ保存します。
+
 `update` は指定したメタデータだけを更新します。配列は置換なので、タグや利用先の増減には `tag`・`collection` を使います。`add` はIDの重複を拒否し、`replace` は名前・タグ・利用先と旧版・メモを保持してGLBを更新します。
 
 ```sh
@@ -54,6 +56,7 @@ GLBの埋め込みクリップを選択して再生・一時停止・時刻指�
 npm run -s assetctl -- schema behavior
 npm run -s assetctl -- behavior set prop.wheel --json behavior.json --if-match '<updatedAt>'
 npm run -s assetctl -- behavior get prop.wheel
+npm run -s assetctl -- behavior clear prop.wheel --if-match '<updatedAt>'
 npm run -s assetctl -- add ./walk.glb --id motion.walk --kind motion
 ```
 
@@ -66,7 +69,11 @@ npm run -s assetctl -- add ./walk.glb --id motion.walk --kind motion
   "modelRevision": "<GLBのSHA-256>",
   "presets": [
     { "id": "breeze", "name": "微風", "rotations": [{ "node": 1, "axis": [0, 0, 1], "rpm": 6 }] },
-    { "id": "strong-wind", "name": "強風", "rotations": [{ "node": 1, "axis": [0, 0, 1], "rpm": 30 }] }
+    {
+      "id": "strong-wind",
+      "name": "強風",
+      "rotations": [{ "node": 1, "axis": [0, 0, 1], "rpm": 30 }]
+    }
   ]
 }
 ```
@@ -100,26 +107,43 @@ catalog/behaviors/<hash>.json       動作設定の固定版
 catalog/reviews/<id>.json           メモ
 catalog/recipes/                   生成条件と出典
 catalog/imports/                   取り込みmanifest
+catalog/import-events/             実行ごとの出典・検査記録
+catalog/sources/                   保管した制作ソース
 catalog/generators/                個別プロジェクトの生成器
-.store/<sha256>.glb                モデル・モーション実体
+.store/blobs/<sha256>.zst          圧縮完全版または完全版からの差分
+.store/blobs/<sha256>.json         復元サイズ・ハッシュ・参照する完全版
 .store/<sha256>.png                サムネイル
 .cache/                           再生成できるキャッシュ・保存ロック
 ```
 
-**`catalog/` と `.store/` の両方をバックアップしてください。** このリポジトリのGit管理には含みません。GLBの内容ハッシュと制作元のコミットは別々に記録します。コードの配布対象は `package.json` の `files` で限定しています。
+GLBのIDは圧縮前のSHA-256です。全登録版を保持し、差分は完全版を直接参照します。差分が完全版の圧縮サイズの80%未満になる場合に採用し、復元時は元のSHA-256を検証します。表示・配布用のGLBキャッシュは既定512 MiB、`ASSET_HUB_CACHE_MB` で変更できます（0は保持しません）。処理中の復元ファイルは別枠で一時的に容量を使います。
+
+```sh
+npm run -s assetctl -- doctor
+npm run -s assetctl -- backup --out /path/to/new-backup
+npm run -s assetctl -- backup verify /path/to/new-backup
+npm run -s assetctl -- restore --from /path/to/new-backup --into /path/to/new-library
+# 旧形式のライブラリを一度だけ移行する場合
+npm run -s assetctl -- storage migrate --backup /path/to/pre-migration-backup
+```
+
+バックアップは制作ソースを含む `catalog/` と `.store/` 全体をコピーし、全ファイルのSHA-256を記録・検証します。復元先・バックアップ先は新規ディレクトリに限ります。移行はバックアップと全GLBの復元検証後に、重複する旧GLBを取り除きます。中断した場合は別の新規バックアップ先を指定して再実行できます。
+
+`doctor` は全圧縮データの復元、参照欠落、壊れた台帳、保存ロックを確認します。残留ロックは実行中のプロセスがないことを確認してから扱ってください。容量と保存先は画面の「保存容量の内訳」でも確認できます。
+
+ライブラリはGit管理に含みません。圧縮保存はバックアップの代わりにはならず、差分を復元するには参照先の完全版も必要です。コードの配布対象は `package.json` の `files` で限定しています。
 
 ## 検証とサムネイル
 
 ```sh
-npm run verify
-npm run test:browser  # 先にbuild。一時ライブラリを使用
+npm run verify:full  # 整形・型検査・単体テスト・build・ブラウザ検査（一時ライブラリ）
 npm run validate:assets -- --json
 npm run validate:assets -- --report .cache/validation.json
 npm run -s assetctl -- gc --dry-run
 npm run thumbnails  # 別ターミナルでnpm run devを起動
 ```
 
-検証・容量確認は読み取り専用です。GLBの欠落や仕様違反、古い動作設定を報告します。仕様エラーのある制作途中のGLBも登録でき、検査結果を詳細画面で確認できます。コンテナが壊れたGLBや外部ファイル参照は拒否します。容量確認は旧版・動作設定・解決済みメモの参照も保持し、外部プロジェクトのlockは走査しません。
+検証・容量確認は台帳と圧縮保存データを変更しません。復元キャッシュは作成されます。GLBの欠落や仕様違反、古い動作設定を報告します。仕様エラーのある制作途中のGLBも登録でき、検査結果を詳細画面で確認できます。コンテナが壊れたGLBや外部ファイル参照は拒否します。容量確認は旧版・動作設定・解決済みメモの参照も保持し、外部プロジェクトのlockは走査しません。
 
 ブラウザ検査・サムネイル生成にはChromiumを使います。`CHROMIUM_EXECUTABLE` で実行ファイルを指定でき、省略時はmacOSのChromeまたはPlaywrightのChromiumを使います。未導入なら `npx playwright install chromium`。
 

@@ -36,7 +36,11 @@ await writeFile(
   path.join(temp, 'catalog/revisions', asset.id, asset.revision + '.json'),
   JSON.stringify(asset),
 );
-await writeFile(path.join(temp, '.store', asset.file.hash + '.glb'), bytes);
+process.env.ASSET_HUB_ROOT = temp;
+const { root: libraryRoot } = await import('../server/store.ts');
+assert.equal(libraryRoot, temp);
+const { putBlob } = await import('../server/blobs.ts');
+await putBlob(bytes);
 const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: root,
   env: { ...process.env, PORT: '0', NODE_ENV: 'production', ASSET_HUB_ROOT: temp },
@@ -83,7 +87,13 @@ try {
     assert.equal(await page.locator('.asset-card').count(), 1);
   }
   await page.locator('.asset-card').click();
-  await page.locator('.viewer-state').waitFor({ state: 'hidden', timeout: 20000 });
+  await page
+    .locator('.viewer-state')
+    .waitFor({ state: 'hidden', timeout: 20000 })
+    .catch(async (error) => {
+      console.error(await page.locator('.viewer-state').innerText(), logs);
+      throw error;
+    });
   for (const mode of ['ワイヤーフレーム', '法線', 'マテリアル']) {
     await page.getByRole('button', { name: mode, exact: true }).click();
     assert.equal(
@@ -169,7 +179,7 @@ try {
   await openModal.click();
   await page
     .getByLabel('GLBファイル', { exact: true })
-    .setInputFiles(path.join(temp, '.store', asset.file.hash + '.glb'));
+    .setInputFiles({ name: 'model.glb', mimeType: 'model/gltf-binary', buffer: bytes });
   await page.getByLabel('名前', { exact: true }).fill('追加したモデル');
   await page.getByLabel('アセットID', { exact: true }).fill('test.uploaded');
   await page.getByRole('button', { name: 'ライブラリに登録' }).click();

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 const temp = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-test-'));
 process.env.ASSET_HUB_ROOT = temp;
-const store = await import('../server/store.ts');
+const store = { ...(await import('../server/store.ts')), ...(await import('../server/blobs.ts')) };
 const { inspectGlb } = await import('../tools/inspect.ts');
 const { createApp, apiErrors } = await import('../server/app.ts');
 const { syncLock } = await import('../tools/assetctl.ts');
@@ -42,13 +42,14 @@ test('valid GLB is measured, malformed and externally referenced inputs are reje
 });
 test('reimport refuses corrupt stored bytes before registering a new asset', async () => {
   const { importGlb } = await import('../server/operations.ts');
-  await writeFile(store.blobPath(hash), 'corrupt');
+  const original = await readFile(store.encodedPath(hash));
+  await writeFile(store.encodedPath(hash), 'corrupt');
   try {
     await assert.rejects(() => importGlb(bytes, 'model.glb', { id: 'test.corrupt' }), /SHA-256/);
     assert.equal(await store.exists(store.assetPath('test.corrupt')), false);
-    assert.equal(await readFile(store.blobPath(hash), 'utf8'), 'corrupt');
+    assert.equal(await readFile(store.encodedPath(hash), 'utf8'), 'corrupt');
   } finally {
-    await writeFile(store.blobPath(hash), bytes);
+    await writeFile(store.encodedPath(hash), original);
   }
 });
 test('catalog and binary download serve actual bytes from the hidden store', async () => {
@@ -64,8 +65,8 @@ test('catalog and binary download serve actual bytes from the hidden store', asy
   assert.equal(download.status, 200);
   assert.match(download.headers.get('Content-Disposition') ?? '', /test.triangle.glb/);
   const target = path.join(temp, 'external.glb');
-  await rename(store.blobPath(hash), target);
-  await symlink(target, store.blobPath(hash));
+  await rename(store.encodedPath(hash), target);
+  await symlink(target, store.encodedPath(hash));
   try {
     const linkedCatalog = await (await fetch(base + '/api/catalog')).json();
     assert.equal(linkedCatalog.assets[0].available, true);
@@ -73,8 +74,8 @@ test('catalog and binary download serve actual bytes from the hidden store', asy
     assert.equal(linkedDownload.status, 200);
     assert.equal(store.digest(new Uint8Array(await linkedDownload.arrayBuffer())), hash);
   } finally {
-    await rm(store.blobPath(hash));
-    await rename(target, store.blobPath(hash));
+    await rm(store.encodedPath(hash));
+    await rename(target, store.encodedPath(hash));
   }
 });
 test('metadata survives reimport and stale edits cannot overwrite newer data', async () => {
@@ -144,7 +145,7 @@ test('local API rejects foreign writes, invalid IDs and status fields', async ()
     400,
   );
   assert.throws(() => store.assetPath('../escape'));
-  assert.throws(() => store.blobPath('../escape'));
+  assert.throws(() => store.encodedPath('../escape'));
   assert.equal((await fetch(base + '/api/files/not-a-hash')).status, 400);
 });
 test('sync verifies pinned bytes and refuses tampering or overwrites', async () => {
@@ -160,7 +161,7 @@ test('sync verifies pinned bytes and refuses tampering or overwrites', async () 
   await assert.rejects(() => syncLock(lock, out), /異なる内容/);
   await syncLock(lock, out, true);
   assert.equal(store.digest(await readFile(target)), hash);
-  await writeFile(store.blobPath(hash), 'tampered source');
+  await writeFile(store.encodedPath(hash), 'tampered source');
   await assert.rejects(() => syncLock(lock, path.join(temp, 'runtime2')), /SHA-256/);
   await assert.rejects(() =>
     syncLock(

@@ -11,11 +11,22 @@ import {
   inspectAsset,
   getBehavior,
   setBehavior,
+  clearBehavior,
 } from './operations.ts';
 import { hashSchema, idSchema } from '../src/schema.ts';
+import { withBlob } from './blobs.ts';
+import { inspectStorage } from '../tools/storage.ts';
 import { getCatalog } from './catalog.ts';
 import { createLock } from '../tools/assetctl.ts';
-import { root, storeDir, getAsset, listAssets, getNotes, blobPath, exists } from './store.ts';
+import {
+  root,
+  storeDir,
+  getAsset,
+  listAssets,
+  getNotes,
+  withLibraryLock,
+  exists,
+} from './store.ts';
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
@@ -74,8 +85,10 @@ export function createApp() {
         return res.status(400).json({ error: 'PNGが必要です' });
       const target = path.join(storeDir, hash + '.png'),
         temp = target + '.' + randomUUID() + '.tmp';
-      await writeFile(temp, req.body);
-      await rename(temp, target);
+      await withLibraryLock(async () => {
+        await writeFile(temp, req.body);
+        await rename(temp, target);
+      });
       res.json({ saved: true });
     },
   );
@@ -93,6 +106,10 @@ export function createApp() {
       assets,
     });
   });
+  app.get('/api/storage', async (_req, res) => res.json(await inspectStorage()));
+  app.delete('/api/assets/:id/behavior', async (req, res) =>
+    res.json(await clearBehavior(req.params.id, String(req.headers['if-match'] ?? ''))),
+  );
   app.get('/api/assets/:id', async (req, res) => res.json(await getAsset(req.params.id)));
   app.get('/api/assets/:id/lock', async (req, res) => res.json(await createLock([req.params.id])));
   app.patch('/api/assets/:id', async (req, res) => {
@@ -131,7 +148,13 @@ export function createApp() {
   app.get('/api/files/:hash', async (req, res) => {
     const hash = hashSchema.parse(req.params.hash);
     res.set('Cache-Control', 'public,max-age=31536000,immutable').type('model/gltf-binary');
-    res.sendFile(blobPath(hash), { dotfiles: 'allow' });
+    await withBlob(
+      hash,
+      (file) =>
+        new Promise<void>((resolve, reject) =>
+          res.sendFile(file, { dotfiles: 'allow' }, (error) => (error ? reject(error) : resolve())),
+        ),
+    );
   });
   app.get('/api/thumbnails/:hash', async (req, res) => {
     const hash = hashSchema.parse(req.params.hash);
@@ -140,7 +163,15 @@ export function createApp() {
   });
   app.get('/api/assets/:id/download', async (req, res) => {
     const a = await getAsset(req.params.id);
-    res.download(blobPath(a.file.hash), a.id + '.glb', { dotfiles: 'allow' });
+    await withBlob(
+      a.file.hash,
+      (file) =>
+        new Promise<void>((resolve, reject) =>
+          res.download(file, a.id + '.glb', { dotfiles: 'allow' }, (error) =>
+            error ? reject(error) : resolve(),
+          ),
+        ),
+    );
   });
   app.get('/api/export', async (req, res) =>
     res.json({ schema: 1, exportedAt: new Date().toISOString(), assets: await listAssets() }),
@@ -157,6 +188,7 @@ export function apiErrors(
   const status =
     error instanceof ZodError ? 400 : error.code === 'ENOENT' ? 404 : (error.status ?? 500);
   if (status === 500) console.error(error);
+  if (res.headersSent) return res.destroy(error);
   res.status(status).json({
     error:
       status === 404

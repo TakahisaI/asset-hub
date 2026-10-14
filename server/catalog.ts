@@ -8,6 +8,7 @@ import {
   getNotes,
   recordProblem,
 } from './store.ts';
+import { blobAvailable } from './blobs.ts';
 import type { CatalogAsset } from '../src/schema.ts';
 
 export async function getCatalog() {
@@ -44,7 +45,12 @@ export async function getCatalog() {
       }
       return {
         ...asset,
-        available: stored.has(asset.file.hash + '.glb'),
+        available: await blobAvailable(asset.file.hash).catch((error) => {
+          problems.push(
+            recordProblem(path.join(storeDir, 'blobs', asset.file.hash + '.json'), error),
+          );
+          return false;
+        }),
         thumbnail: stored.has(asset.file.hash + '.png'),
         notesCount,
       };

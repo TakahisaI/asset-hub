@@ -3,6 +3,8 @@ import path from 'node:path';
 import { createApp, apiErrors } from './app.ts';
 import { fileURLToPath } from 'node:url';
 const codeRoot = fileURLToPath(new URL('..', import.meta.url));
+const { assertStorageReady } = await import('./blobs.ts');
+await assertStorageReady();
 const app = createApp();
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(codeRoot, 'dist')));

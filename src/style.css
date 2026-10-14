@@ -1885,3 +1885,28 @@ summary {
   padding: 6px;
   display: flex;
 }
+
+.storage-detail {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.storage-detail summary {
+  cursor: pointer;
+}
+.storage-detail dl {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+}
+.storage-detail dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.storage-detail dd {
+  margin: 0;
+}
+.storage-detail code {
+  overflow-wrap: anywhere;
+}

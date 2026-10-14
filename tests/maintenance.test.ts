@@ -19,7 +19,7 @@ import { fixtureAsset, triangleGlb } from './fixtures.ts';
 
 const temp = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-maintenance-'));
 process.env.ASSET_HUB_ROOT = temp;
-const store = await import('../server/store.ts');
+const store = { ...(await import('../server/store.ts')), ...(await import('../server/blobs.ts')) };
 const { getCatalog } = await import('../server/catalog.ts');
 const { validateAssets } = await import('../tools/validate.ts');
 const { inspectStorage } = await import('../tools/storage.ts');
@@ -56,9 +56,9 @@ async function snapshot() {
 
 test('validation continues through missing, tampered and malformed records without writing catalog or snapshots', async () => {
   const missing = await register('a.missing');
-  await rm(store.blobPath(missing.file.hash));
+  await rm(store.encodedPath(missing.file.hash));
   const tampered = await register('b.tampered', 2);
-  await writeFile(store.blobPath(tampered.file.hash), 'tampered');
+  await writeFile(store.encodedPath(tampered.file.hash), 'tampered');
   const good = await register('z.good', 3);
   await writeFile(path.join(store.assetDir, 'broken.json'), '{broken');
   const before = await snapshot();
@@ -93,7 +93,7 @@ test('report paths protect catalog and blobs through case variants and file/dire
   await symlink(path.join(temp, 'catalog'), path.join(reports, 'catalog-link'), 'dir');
   await symlink(store.storeDir, path.join(reports, 'store-link'), 'dir');
   await symlink(store.assetPath(asset.id), path.join(reports, 'asset-link.json'));
-  await symlink(store.blobPath(asset.revision), path.join(reports, 'blob-link.json'));
+  await symlink(store.encodedPath(asset.revision), path.join(reports, 'blob-link.json'));
   const before = await snapshot();
   for (const target of [
     `catalog/assets/${asset.id}.json`,
@@ -158,15 +158,15 @@ test('catalog and storage follow file symlinks but exclude broken links and dire
   const broken = await register('test.broken', 2);
   const directory = await register('test.directory', 3);
   const external = path.join(temp, 'external.glb');
-  await rename(store.blobPath(asset.revision), external);
-  await symlink(external, store.blobPath(asset.revision));
+  await rename(store.encodedPath(asset.revision), external);
+  await symlink(external, store.encodedPath(asset.revision));
   const image = path.join(temp, 'external.png');
   await writeFile(image, 'thumbnail fixture');
   await symlink(image, path.join(store.storeDir, asset.revision + '.png'));
-  await rm(store.blobPath(broken.revision));
-  await symlink(path.join(temp, 'missing.glb'), store.blobPath(broken.revision));
-  await rm(store.blobPath(directory.revision));
-  await symlink(temp, store.blobPath(directory.revision), 'dir');
+  await rm(store.encodedPath(broken.revision));
+  await symlink(path.join(temp, 'missing.glb'), store.encodedPath(broken.revision));
+  await rm(store.encodedPath(directory.revision));
+  await symlink(temp, store.encodedPath(directory.revision), 'dir');
 
   const catalog = await getCatalog();
   assert.deepEqual(catalog.problems, []);
@@ -177,7 +177,10 @@ test('catalog and storage follow file symlinks but exclude broken links and dire
   const inventory = await inspectStorage();
   assert.equal(inventory.complete, true);
   assert.equal(inventory.summary.glbFiles, 1);
-  assert.equal(inventory.summary.currentBytes, asset.file.bytes);
+  assert.equal(
+    inventory.summary.currentBytes,
+    (await store.getBlobRecord(asset.revision)).encodedBytes,
+  );
   assert.equal(inventory.summary.thumbnailBytes, (await stat(image)).size);
   assert.deepEqual(
     new Set(inventory.missing.map((file) => file.hash)),
@@ -188,12 +191,15 @@ test('catalog and storage follow file symlinks but exclude broken links and dire
   await assert.rejects(
     promisify(execFile)(
       process.execPath,
-      ['--import', 'tsx', 'tools/validate.ts', '--report', store.blobPath(asset.revision)],
+      ['--import', 'tsx', 'tools/validate.ts', '--report', store.encodedPath(asset.revision)],
       { env: process.env },
     ),
     /検証レポートは catalog\/ と \.store\/ の外に保存してください/,
   );
-  assert.equal(store.digest(await readFile(external)), asset.revision);
+  assert.equal(
+    store.digest(await readFile(external)),
+    (await store.getBlobRecord(asset.revision)).encodedHash,
+  );
 });
 
 test('storage inventory retains historical/shared/note-only hashes and fails closed on damaged references', async () => {
@@ -208,7 +214,7 @@ test('storage inventory retains historical/shared/note-only hashes and fails clo
       assetId: 'test.removed',
       revision: noteHash,
       text: '解決後も参照を残す',
-      createdAt: '2026-01-01',
+      createdAt: '2026-01-01T00:00:00.000Z',
       resolved: true,
     },
   ]);
@@ -216,14 +222,21 @@ test('storage inventory retains historical/shared/note-only hashes and fails clo
   await writeFile(path.join(store.storeDir, orphan + '.png'), 'thumbnail fixture');
   const report = await inspectStorage();
   assert.equal(report.complete, true);
-  assert.equal(report.summary.currentBytes, current.file.bytes); // Deduplicated across IDs.
-  assert.equal(report.summary.retainedHistoryBytes, old.file.bytes + noteBytes.length);
+  assert.equal(
+    report.summary.currentBytes,
+    (await store.getBlobRecord(current.revision)).encodedBytes,
+  ); // Deduplicated across IDs.
+  assert.equal(
+    report.summary.retainedHistoryBytes,
+    (await store.getBlobRecord(old.revision)).encodedBytes +
+      (await store.getBlobRecord(noteHash)).encodedBytes,
+  );
   assert.deepEqual(
     report.candidates.map((f) => f.file),
-    [orphan + '.glb', orphan + '.png'],
+    ['blobs/' + orphan + '.zst', orphan + '.png'],
   );
-  assert.ok(await store.exists(store.blobPath(orphan))); // Dry run means no deletions.
-  await rm(store.blobPath(old.file.hash));
+  assert.ok(await store.exists(store.encodedPath(orphan))); // Dry run means no deletions.
+  await rm(store.encodedPath(old.file.hash));
   const missing = await inspectStorage();
   assert.deepEqual(
     missing.missing.map((r) => r.hash),
@@ -254,7 +267,7 @@ test('cached catalog reflects external edits, new/resolved notes and file remova
     assetId: asset.id,
     revision: asset.revision,
     text: '確認',
-    createdAt: '2026-01-01',
+    createdAt: '2026-01-01T00:00:00.000Z',
     resolved: false,
   };
   await store.saveNotes(asset.id, [note]);
@@ -262,7 +275,7 @@ test('cached catalog reflects external edits, new/resolved notes and file remova
   const notesFile = path.join(temp, 'catalog/reviews', asset.id + '.json');
   await writeFile(notesFile, JSON.stringify([{ ...note, resolved: true }]));
   assert.equal((await getCatalog()).assets[0].notesCount, 0);
-  await rm(store.blobPath(asset.file.hash));
+  await rm(store.encodedPath(asset.file.hash));
   assert.equal((await getCatalog()).assets[0].available, false);
   await writeFile(notesFile, '{');
   await writeFile(path.join(store.assetDir, 'broken.json'), '{}');
@@ -288,7 +301,7 @@ test('sync validates the whole lock before publishing destinations and supports 
   });
   const lock = { schema: 1, assets: [entry(one.id, one.revision), entry(two.id, two.revision)] };
   const out = path.join(temp, 'runtime');
-  await writeFile(store.blobPath(two.revision), 'invalid second model');
+  await writeFile(store.encodedPath(two.revision), 'invalid second model');
   await assert.rejects(() => syncLock(lock, out), /SHA-256/);
   assert.equal(await store.exists(out), false);
   const result = await syncLock(

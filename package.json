@@ -16,7 +16,9 @@
     "thumbnails": "tsx tools/thumbnails.ts",
     "assetctl": "tsx tools/assetctl.ts",
     "test:browser": "tsx tests/browser.ts",
-    "validate:assets": "tsx tools/validate.ts"
+    "validate:assets": "tsx tools/validate.ts",
+    "format:check": "prettier --check .",
+    "verify:full": "npm run format:check && npm run verify && npm run test:browser"
   },
   "dependencies": {
     "@fontsource/dm-sans": "^5.3.0",

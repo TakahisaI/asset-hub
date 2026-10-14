@@ -9,10 +9,9 @@ import {
   copyFile,
   rm,
 } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { parseArgs } from 'node:util';
@@ -24,7 +23,7 @@ import {
   hashSchema,
   idSchema,
 } from '../src/schema.ts';
-import { root, getAsset, listAssets, putBlob, blobPath, exists } from '../server/store.ts';
+import { root, getAsset, listAssets, exists, atomicJson } from '../server/store.ts';
 import {
   importGlb,
   importInput,
@@ -34,12 +33,17 @@ import {
   getRevision,
   getBehavior,
   setBehavior,
+  clearBehavior,
+  revisionDownloads,
   addNote,
   resolveNote,
 } from '../server/operations.ts';
 import { getNotes, directoryEntries } from '../server/store.ts';
 import { ghFile } from './github.ts';
 import { inspectStorage } from './storage.ts';
+import { putBlob, withBlob, manifestPath, fileDigest } from '../server/blobs.ts';
+import { backupLibrary, verifyBackup, restoreBackup } from './backup.ts';
+import { doctor, migrateStorage } from './maintenance.ts';
 export const lockSchema = z.object({
   schema: z.literal(1),
   assets: z
@@ -60,11 +64,6 @@ export const lockSchema = z.object({
       '固定版の指定が重複しています',
     ),
 });
-async function fileDigest(file: string) {
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
-  return hash.digest('hex');
-}
 export async function syncLock(raw: unknown, out: string, force = false) {
   const lock = lockSchema.parse(raw);
   const staging = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-sync-'));
@@ -114,31 +113,32 @@ export async function syncLock(raw: unknown, out: string, force = false) {
       )
         throw new Error('登録済みの固定版と一致しません');
       const staged = path.join(staging, item.sha256 + '.glb');
-      const cache = !(await exists(blobPath(item.sha256)));
+      const cache = !(await exists(manifestPath(item.sha256)));
       if (!(await exists(staged))) {
-        if (!cache) await copyFile(blobPath(item.sha256), staged);
-        else if (revision.file.download)
-          await writeFile(
-            staged,
-            await ghFile(
-              revision.file.download.repository,
-              revision.file.download.commit,
-              revision.file.download.path,
-            ),
-          );
-        else if (revision.file.upstreamPath && revision.source.repository !== 'local')
-          await writeFile(
-            staged,
-            await ghFile(
-              revision.source.repository,
-              revision.source.commit,
-              revision.file.upstreamPath,
-            ),
-          );
-        else
-          throw new Error(
-            `GLBが未取得です: ${item.id}。バックアップから .store を復元するか、固定版の生成元で再生成してください`,
-          );
+        if (!cache) await withBlob(item.sha256, (file) => copyFile(file, staged));
+        else {
+          const downloads = await revisionDownloads(item.id, item.revision);
+          const failures = [];
+          let fetched = false;
+          for (const download of downloads) {
+            try {
+              await writeFile(
+                staged,
+                await ghFile(download.repository, download.commit, download.path),
+              );
+              if ((await fileDigest(staged)) !== item.sha256)
+                throw new Error('SHA-256が一致しません');
+              fetched = true;
+              break;
+            } catch (error) {
+              failures.push((error as Error).message);
+            }
+          }
+          if (!fetched)
+            throw new Error(
+              `GLBが未取得です: ${item.id}。バックアップから復元してください。${failures.join('; ')}`,
+            );
+        }
         if ((await fileDigest(staged)) !== item.sha256)
           throw new Error(`SHA-256が一致しません: ${item.id}`);
       }
@@ -151,6 +151,7 @@ export async function syncLock(raw: unknown, out: string, force = false) {
       plan.push({ staged, target, hash: item.sha256, cache });
     }
     await mkdir(out, { recursive: true });
+    await rm(path.join(out, 'asset-hub-sync-manifest.json'), { force: true });
     for (const item of plan) {
       const temp = item.target + '.' + randomUUID() + '.tmp';
       try {
@@ -162,6 +163,7 @@ export async function syncLock(raw: unknown, out: string, force = false) {
       }
       if (item.cache) await putBlob(await readFile(item.staged));
     }
+    await atomicJson(path.join(out, 'asset-hub-sync-manifest.json'), lock);
     return lock.assets.map((item) => ({
       id: item.id,
       revision: item.revision,
@@ -232,11 +234,15 @@ const help = {
     'tag add|remove <id> <tag>... [--if-match updatedAt]',
     'collection add|remove <id> <collection>... [--if-match updatedAt]',
     'import --manifest file.json [--update]',
-    'behavior get <id> | behavior set <id> --json file.json|- --if-match updatedAt',
+    'behavior get <id> | behavior set <id> --json file.json|- --if-match updatedAt | behavior clear <id> --if-match updatedAt',
     'note list <id> | note add <id> --json file.json|- | note resolve|reopen <id> <note-id>',
     'lock <id>...',
     'sync --lock file.json --out directory [--force]',
     'gc --dry-run',
+    'doctor',
+    'backup --out new-directory | backup verify directory',
+    'restore --from backup-directory --into new-library-directory',
+    'storage migrate --backup new-directory',
     'schema asset|edit|behavior|import|note',
   ],
 };
@@ -259,6 +265,9 @@ async function main() {
       'manifest',
       'lock',
       'out',
+      'from',
+      'into',
+      'backup',
     ].map((k) => [k, { type: 'string' }]),
   );
   for (const key of ['force', 'dry-run', 'update', 'help']) options[key] = { type: 'boolean' };
@@ -290,12 +299,16 @@ async function main() {
     update: ['json', 'if-match'],
     tag: ['if-match'],
     collection: ['if-match'],
-    behavior: args[0] === 'set' ? ['json', 'if-match'] : [],
+    behavior: args[0] === 'set' ? ['json', 'if-match'] : args[0] === 'clear' ? ['if-match'] : [],
     note: args[0] === 'add' ? ['json'] : [],
     import: ['manifest', 'update'],
     lock: [],
     sync: ['lock', 'out', 'force'],
     gc: ['dry-run'],
+    doctor: [],
+    backup: ['out'],
+    restore: ['from', 'into'],
+    storage: ['backup'],
   };
   for (const key of Object.keys(v))
     if (key !== 'help' && !(allowed[command] ?? []).includes(key))
@@ -393,7 +406,8 @@ async function main() {
       result = a.behavior ? { hash: a.behavior, data: await getBehavior(a.behavior) } : null;
     } else if (args[0] === 'set')
       result = await setBehavior(args[1], await jsonInput(required('json')), required('if-match'));
-    else throw new Error('get または set を指定してください');
+    else if (args[0] === 'clear') result = await clearBehavior(args[1], required('if-match'));
+    else throw new Error('get、set、clear を指定してください');
   } else if (command === 'note') {
     count(['resolve', 'reopen'].includes(args[0]) ? 3 : 2);
     if (args[0] === 'list') {
@@ -436,6 +450,26 @@ async function main() {
   } else if (command === 'sync') {
     count(0);
     result = await syncLock(await jsonInput(required('lock')), required('out'), !!v.force);
+  } else if (command === 'doctor') {
+    count(0);
+    result = await doctor();
+    if (!(result as Awaited<ReturnType<typeof doctor>>).ok) process.exitCode = 1;
+  } else if (command === 'backup') {
+    if (args[0] === 'verify') {
+      count(2);
+      const manifest = await verifyBackup(args[1]);
+      result = { verified: true, files: manifest.files.length, createdAt: manifest.createdAt };
+    } else {
+      count(0);
+      result = await backupLibrary(required('out'));
+    }
+  } else if (command === 'restore') {
+    count(0);
+    result = await restoreBackup(required('from'), required('into'));
+  } else if (command === 'storage') {
+    count(1);
+    if (args[0] !== 'migrate') throw new Error('storage migrate を指定してください');
+    result = await migrateStorage(required('backup'));
   } else if (command === 'gc') {
     count(0);
     if (!v['dry-run']) throw new Error('gc は --dry-run のみ対応しています');

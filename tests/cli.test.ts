@@ -170,7 +170,11 @@ test('CLI motion bindings pin source versions; lock/sync include behavior, old s
   const next = path.join(temp, 'changed.glb');
   await writeFile(next, animatedGlb(true, 0.3));
   await cli('replace', model.id, next, '--if-match', current.updatedAt);
-  await assert.rejects(() => cli('lock', model.id), /再設定/);
+  assert.equal((await cli('lock', model.id)).assets[0].behavior, undefined);
+  assert.equal(
+    await readFile(path.join(temp, 'catalog/behaviors', oldHash + '.json'), 'utf8'),
+    before,
+  );
   assert.equal((await cli('schema', 'behavior')).type, 'object');
 });
 

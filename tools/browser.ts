@@ -1,5 +1,10 @@
 import { chromium } from 'playwright';
-import { exists } from '../server/store.ts';
+import { access } from 'node:fs/promises';
+const exists = (file: string) =>
+  access(file).then(
+    () => true,
+    () => false,
+  );
 export async function browser() {
   const explicit = process.env.CHROMIUM_EXECUTABLE;
   if (explicit && !(await exists(explicit)))

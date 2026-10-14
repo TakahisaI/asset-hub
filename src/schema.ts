@@ -105,71 +105,87 @@ export const playbackSchema = z
     loop: z.boolean(),
   })
   .strict();
-export const assetSchema = z.object({
-  schema: z.literal(1),
-  id: idSchema,
-  name: z.string().min(1).max(160),
-  description: z.string().max(12000),
-  category: z.enum([
-    'buildings',
-    'props',
-    'ships',
-    'environments',
-    'animals',
-    'characters',
-    'motions',
-    'other',
-  ]),
-  kind: z.enum(['model', 'motion']).optional(),
-  behavior: hashSchema.optional(),
-  tags: z.array(z.string().min(1).max(80)).max(40),
-  collections: z.array(z.string().min(1).max(80)).max(40),
-  license: z.string().max(500),
-  source: z.object({
-    repository: z.union([z.literal('local'), z.string().regex(/^[\w-]+\/[\w.-]+$/)]),
-    commit: z.union([z.literal(''), z.string().regex(/^[a-f0-9]{40}$/)]),
-    path: z.string(),
-    kind: z.enum(['blender', 'procedural', 'other']),
-    upstreamId: z.string(),
-    specification: z.string().optional(),
-    verification: z.string().optional(),
-    scope: z.string(),
-    integrationNote: z.string(),
-  }),
-  revision: hashSchema,
-  file: z.object({
-    hash: hashSchema,
-    bytes: z.number().int().nonnegative(),
-    name: z.string(),
-    upstreamPath: z.string().optional(),
-    download: downloadSchema.optional(),
-  }),
-  metrics: z.object({
-    triangles: z.number(),
-    vertices: z.number(),
-    meshes: z.number(),
-    materials: z.number(),
-    textures: z.number(),
-    animations: z.number(),
-  }),
-  qa: z.object({
-    errors: z.number(),
-    warnings: z.number(),
-    messages: z.array(
-      z.object({
-        code: z.string(),
-        message: z.string(),
-        severity: z.number(),
-        pointer: z.string().optional(),
-      }),
-    ),
-  }),
-  importWarnings: z.array(z.string()).optional(),
-  importedAt: z.string(),
-  updatedAt: z.string(),
-});
+const assetRecordSchema = z
+  .object({
+    schema: z.literal(1),
+    id: idSchema,
+    name: z.string().min(1).max(160),
+    description: z.string().max(12000),
+    category: z.enum([
+      'buildings',
+      'props',
+      'ships',
+      'environments',
+      'animals',
+      'characters',
+      'motions',
+      'other',
+    ]),
+    kind: z.enum(['model', 'motion']).optional(),
+    behavior: hashSchema.optional(),
+    tags: z.array(z.string().min(1).max(80)).max(40),
+    collections: z.array(z.string().min(1).max(80)).max(40),
+    license: z.string().max(500),
+    source: z
+      .object({
+        repository: z.union([z.literal('local'), z.string().regex(/^[\w-]+\/[\w.-]+$/)]),
+        commit: z.union([z.literal(''), z.string().regex(/^[a-f0-9]{40}$/)]),
+        path: z.string(),
+        kind: z.enum(['blender', 'procedural', 'other']),
+        upstreamId: z.string(),
+        specification: z.string().optional(),
+        verification: z.string().optional(),
+        scope: z.string(),
+        integrationNote: z.string(),
+      })
+      .strict(),
+    revision: hashSchema,
+    file: z
+      .object({
+        hash: hashSchema,
+        bytes: z.number().int().nonnegative(),
+        name: z.string(),
+        upstreamPath: z.string().optional(),
+        download: downloadSchema.optional(),
+      })
+      .strict(),
+    metrics: z
+      .object({
+        triangles: z.number().int().nonnegative(),
+        vertices: z.number().int().nonnegative(),
+        meshes: z.number().int().nonnegative(),
+        materials: z.number().int().nonnegative(),
+        textures: z.number().int().nonnegative(),
+        animations: z.number().int().nonnegative(),
+      })
+      .strict(),
+    qa: z
+      .object({
+        errors: z.number().int().nonnegative(),
+        warnings: z.number().int().nonnegative(),
+        messages: z.array(
+          z
+            .object({
+              code: z.string(),
+              message: z.string(),
+              severity: z.number().int().nonnegative(),
+              pointer: z.string().optional(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+    importWarnings: z.array(z.string()).optional(),
+    importedAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict();
+export const assetSchema = assetRecordSchema.refine(
+  (asset) => asset.revision === asset.file.hash,
+  'リビジョンとGLBハッシュが一致しません',
+);
 export type Asset = z.infer<typeof assetSchema>;
-export const editSchema = assetSchema
+export const editSchema = assetRecordSchema
   .pick({
     name: true,
     description: true,
@@ -184,14 +200,14 @@ export const noteInput = z
   .object({
     revision: hashSchema,
     text: z.string().trim().min(1).max(10000),
-    camera: z.object({ position: vectorSchema, target: vectorSchema }).optional(),
+    camera: z.object({ position: vectorSchema, target: vectorSchema }).strict().optional(),
     playback: playbackSchema.optional(),
   })
   .strict();
 export const reviewNoteSchema = noteInput.extend({
   id: z.string().min(1),
   assetId: idSchema,
-  createdAt: z.string(),
+  createdAt: z.iso.datetime(),
   resolved: z.boolean(),
 });
 export type ReviewNote = z.infer<typeof reviewNoteSchema>;

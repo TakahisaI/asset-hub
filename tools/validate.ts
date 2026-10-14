@@ -1,7 +1,8 @@
-import { readFile, realpath, lstat } from 'node:fs/promises';
+import { realpath, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { scanAssets, blobPath, digest, root, atomicJson } from '../server/store.ts';
+import { scanAssets, digest, root, atomicJson } from '../server/store.ts';
+import { readBlob } from '../server/blobs.ts';
 import { inspectGlb } from './inspect.ts';
 import { getBehavior, inspectAsset } from '../server/operations.ts';
 // Validation is observational. Import metadata and pinned snapshots are never rewritten.
@@ -15,7 +16,7 @@ export async function validateAssets() {
   }[] = [];
   for (const asset of assets) {
     try {
-      const bytes = await readFile(blobPath(asset.file.hash));
+      const bytes = await readBlob(asset.file.hash);
       if (digest(bytes) !== asset.file.hash) throw new Error('SHA-256が一致しません');
       if (asset.behavior) {
         const behavior = await getBehavior(asset.behavior);

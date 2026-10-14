@@ -30,7 +30,10 @@ import '@fontsource/dm-sans/600.css';
 import '@fontsource/dm-sans/700.css';
 import './style.css';
 import { Upload } from './upload.tsx';
+import type { inspectStorage } from '../tools/storage.ts';
+type Storage = Awaited<ReturnType<typeof inspectStorage>>;
 function App() {
+  const [storage, setStorage] = useState<Storage | null>(null);
   const [assets, setAssets] = useState<CatalogAsset[]>([]),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(''),
@@ -44,8 +47,11 @@ function App() {
     [toast, setToast] = useState(''),
     [help, setHelp] = useState(false),
     search = useRef<HTMLInputElement>(null);
-  const reload = () =>
-    api<{ assets: CatalogAsset[]; problems: CatalogProblem[] }>('/api/catalog')
+  const reload = () => {
+    void api<Storage>('/api/storage')
+      .then(setStorage)
+      .catch(() => setStorage(null));
+    return api<{ assets: CatalogAsset[]; problems: CatalogProblem[] }>('/api/catalog')
       .then((d) => {
         setAssets(d.assets);
         setProblems(d.problems ?? []);
@@ -53,6 +59,7 @@ function App() {
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
+  };
   useEffect(() => {
     void reload();
     const pop = () => setSelected(new URLSearchParams(location.search).get('asset') ?? '');
@@ -191,7 +198,7 @@ function App() {
               カタログはこのPCに保存
             </span>
             <small>
-              {fmt(assets.length)} assets · {mb(assets.reduce((s, a) => s + a.file.bytes, 0))}
+              {fmt(assets.length)} assets · {storage ? mb(storage.summary.libraryBytes) : '—'}
             </small>
           </div>
           <button className="help-link" onClick={() => setHelp(true)}>
@@ -311,13 +318,53 @@ function App() {
                   <Package size={20} />
                 </span>
                 <span>
-                  <small>保存サイズ</small>
+                  <small>ライブラリ容量</small>
                   <strong className="size-stat">
-                    {mb(assets.reduce((sum, a) => sum + a.file.bytes, 0))}
+                    {storage ? mb(storage.summary.libraryBytes) : '—'}
                   </strong>
                 </span>
               </div>
             </div>
+            {storage && (
+              <details className="storage-detail">
+                <summary>保存容量の内訳</summary>
+                <dl>
+                  <div>
+                    <dt>モデル 現在版</dt>
+                    <dd>{mb(storage.summary.currentBytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>モデル 履歴・復元用の完全版</dt>
+                    <dd>{mb(storage.summary.retainedHistoryBytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>サムネイル</dt>
+                    <dd>{mb(storage.summary.thumbnailBytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>制作ソース・台帳</dt>
+                    <dd>{mb(storage.summary.catalogBytes + storage.summary.indexBytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>未参照候補</dt>
+                    <dd>{mb(storage.summary.candidateBytes)}</dd>
+                  </div>
+                  <div>
+                    <dt>表示キャッシュ（容量の別枠）</dt>
+                    <dd>
+                      {mb(storage.summary.materializedBytes)} /{' '}
+                      {mb(storage.summary.cacheLimitBytes)}
+                    </dd>
+                  </div>
+                </dl>
+                <p>
+                  保存先: <code>{storage.root}</code>
+                </p>
+                {(!storage.complete || storage.missing.length > 0) && (
+                  <p role="alert">保存データに問題があります。CLIの doctor で確認できます。</p>
+                )}
+              </details>
+            )}
             <div className="toolbar">
               <div className="search">
                 <Search size={18} />

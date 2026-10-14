@@ -1,7 +1,8 @@
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { browser } from './browser.ts';
-import { listAssets, storeDir, exists } from '../server/store.ts';
+import { listAssets, storeDir, exists, withLibraryLock } from '../server/store.ts';
 const base = process.env.ASSET_HUB_URL ?? 'http://127.0.0.1:4310';
 const b = await browser();
 const failures: string[] = [];
@@ -34,7 +35,15 @@ try {
         );
         return v.capture();
       }, asset.file.hash);
-      await writeFile(target, Buffer.from(data.split(',')[1], 'base64'));
+      await withLibraryLock(async () => {
+        const temp = target + '.' + randomUUID() + '.tmp';
+        try {
+          await writeFile(temp, Buffer.from(data.split(',')[1], 'base64'));
+          await rename(temp, target);
+        } finally {
+          await rm(temp, { force: true });
+        }
+      });
       console.log('rendered', asset.id);
     } catch (e) {
       failures.push(asset.id);

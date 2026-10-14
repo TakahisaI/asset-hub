@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { assetSchema, idSchema, hashSchema } from '../src/schema.ts';
+import { blobDir, getBlobRecord, blobAvailable, cacheDir, cacheLimit } from '../server/blobs.ts';
 import { getBehavior } from '../server/operations.ts';
 import {
   directoryEntries,
@@ -72,59 +73,100 @@ export async function inspectStorage() {
       problems.push(recordProblem(path.join(reviewsDir, entry.name), error));
     }
   }
-  const files: { file: string; hash: string; kind: string; bytes: number }[] = [];
+  const files: { file: string; hash: string; kind: string; bytes: number; logicalBytes: number }[] =
+    [];
   const otherFiles: string[] = [];
-  for (const entry of await directoryEntries(storeDir)) {
-    const match = /^([a-f0-9]{64})\.(glb|png)$/.exec(entry.name);
-    if (!match) {
-      otherFiles.push(entry.name);
+  let indexBytes = 0;
+  for (const entry of await directoryEntries(blobDir)) {
+    if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) {
+      if (!/^[a-f0-9]{64}\.zst$/.test(entry.name)) otherFiles.push('blobs/' + entry.name);
       continue;
     }
     try {
-      const info = await fileStat(path.join(storeDir, entry.name));
-      if (!info) {
-        otherFiles.push(entry.name);
-        continue;
-      }
-      files.push({
-        file: entry.name,
-        hash: hashSchema.parse(match[1]),
-        kind: match[2],
-        bytes: info.size,
-      });
+      const record = await getBlobRecord(entry.name.slice(0, -5));
+      indexBytes += (await fileStat(path.join(blobDir, entry.name)))!.size;
+      if (record.base) retain(record.base, 'base:' + record.hash);
+      const info = await fileStat(path.join(blobDir, record.hash + '.zst'));
+      if (info)
+        files.push({
+          file: 'blobs/' + record.hash + '.zst',
+          hash: record.hash,
+          kind: 'glb',
+          bytes: info.size,
+          logicalBytes: record.bytes,
+        });
     } catch (error) {
-      problems.push(recordProblem(path.join(storeDir, entry.name), error));
+      problems.push(recordProblem(path.join(blobDir, entry.name), error));
     }
   }
+  for (const entry of await directoryEntries(storeDir)) {
+    if (entry.name === 'blobs') continue;
+    const match = /^([a-f0-9]{64})\.png$/.exec(entry.name);
+    const info = await fileStat(path.join(storeDir, entry.name));
+    if (!match || !info) {
+      otherFiles.push(entry.name);
+      continue;
+    }
+    files.push({
+      file: entry.name,
+      hash: match[1],
+      kind: 'png',
+      bytes: info.size,
+      logicalBytes: info.size,
+    });
+  }
+  const missing = [];
+  for (const [hash, refs] of references) {
+    try {
+      if (await blobAvailable(hash)) continue;
+    } catch (error) {
+      problems.push(recordProblem(path.join(blobDir, hash + '.json'), error));
+    }
+    missing.push({ hash, references: [...refs].sort() });
+  }
   const blobs = files.filter((f) => f.kind === 'glb');
-  const present = new Set(blobs.map((f) => f.hash));
-  const missing = [...references]
-    .filter(([hash]) => !present.has(hash))
-    .map(([hash, refs]) => ({ hash, references: [...refs].sort() }));
   const sum = (items: typeof files) => items.reduce((total, f) => total + f.bytes, 0);
   // Fail closed: malformed records may contain references we could not read.
   const candidates = problems.length
     ? []
     : files.filter((f) => !references.has(f.hash)).sort((a, b) => a.file.localeCompare(b.file));
+  const { libraryInventory } = await import('./backup.ts');
+  let catalogBytes = 0;
+  try {
+    catalogBytes = (await libraryInventory(root, true, ['catalog']))
+      .filter((f) => f.path.startsWith('catalog/'))
+      .reduce((sum, f) => sum + f.bytes, 0);
+  } catch (error) {
+    problems.push(recordProblem(path.join(root, 'catalog'), error));
+  }
+  let materializedBytes = 0;
+  for (const entry of await directoryEntries(cacheDir))
+    materializedBytes += (await fileStat(path.join(cacheDir, entry.name)))?.size ?? 0;
   return {
     schema: 1,
+    root,
     dryRun: true,
     complete: problems.length === 0,
     scannedAt: new Date().toISOString(),
     summary: {
       glbFiles: blobs.length,
       glbBytes: sum(blobs),
+      logicalBytes: blobs.reduce((sum, f) => sum + f.logicalBytes, 0),
       currentBytes: sum(blobs.filter((f) => current.has(f.hash))),
       retainedHistoryBytes: sum(
         blobs.filter((f) => !current.has(f.hash) && references.has(f.hash)),
       ),
       thumbnailBytes: sum(files.filter((f) => f.kind === 'png')),
       candidateBytes: sum(candidates),
+      indexBytes,
+      catalogBytes,
+      materializedBytes,
+      cacheLimitBytes: cacheLimit(),
+      libraryBytes: sum(files) + indexBytes + catalogBytes,
     },
-    candidates,
+    candidates: problems.length ? [] : candidates,
     missing,
     otherFiles: otherFiles.sort(),
     problems,
-    note: '現在の台帳・全固定版・解決済みを含む全メモを参照として保持。ファイルは削除しません。外部lockは走査対象外です。',
   };
 }
