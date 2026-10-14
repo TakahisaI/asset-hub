@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import {
   Box,
   FileJson,
@@ -18,26 +18,137 @@ import {
   LoaderCircle,
 } from 'lucide-react';
 import type { AssetViewer } from './viewer.ts';
-import { categories, sourceUrl, type CatalogAsset, type Asset, type Behavior } from './schema.ts';
+import {
+  categories,
+  sourceUrl,
+  type CatalogAsset,
+  type Asset,
+  type Behavior,
+  type ReviewNote,
+} from './schema.ts';
 import { PlaybackControls } from './playback-controls.tsx';
 import { fmt, mb, api, saveFile } from './ui.ts';
 import { useAssetNotes, NotesPanel } from './notes.tsx';
-export function Detail({
-  asset: a,
-  onBack,
-  onUpdate,
-  notify,
-}: {
+type DetailProps = {
   asset: CatalogAsset;
   onBack: () => void;
   onUpdate: () => Promise<void>;
   notify: (s: string) => void;
+};
+type Revision = Asset & Pick<CatalogAsset, 'available' | 'thumbnail'>;
+
+export function Detail(props: DetailProps) {
+  const [revisions, setRevisions] = useState<Revision[]>([]),
+    [selected, setSelected] = useState<{ asset: CatalogAsset; note?: ReviewNote } | null>(null),
+    [error, setError] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    void api<Revision[]>(`/api/assets/${props.asset.id}/revisions`)
+      .then((items) => {
+        if (!cancelled) setRevisions(items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.asset.id, props.asset.revision]);
+  const a = selected ? { ...selected.asset, notesCount: props.asset.notesCount } : props.asset;
+  return (
+    <DetailView
+      {...props}
+      asset={a}
+      currentAsset={props.asset}
+      readOnly={!!selected}
+      initialNote={selected?.note}
+      onOpenNote={(note) => {
+        const revision =
+          note.revision === props.asset.revision
+            ? props.asset
+            : revisions.find((r) => r.revision === note.revision);
+        if (!revision) {
+          setError('メモが参照する版を読み込めません。履歴と保存データを確認してください。');
+          return;
+        }
+        setError('');
+        setSelected({
+          asset: { ...props.asset, ...revision, behavior: note.playback?.behavior },
+          note,
+        });
+      }}
+      history={
+        <div className="revision-browser">
+          <label>
+            表示する版
+            <select
+              aria-label="表示する版"
+              value={a.revision}
+              onChange={(e) => {
+                setError('');
+                const revision = revisions.find((r) => r.revision === e.target.value);
+                setSelected(
+                  e.target.value === props.asset.revision || !revision
+                    ? null
+                    : { asset: { ...props.asset, ...revision, behavior: revision.behavior } },
+                );
+              }}
+            >
+              <option value={props.asset.revision}>
+                現在版 · {props.asset.revision.slice(0, 12)}
+              </option>
+              {revisions
+                .filter((r) => r.revision !== props.asset.revision)
+                .map((r) => (
+                  <option key={r.revision} value={r.revision}>
+                    {new Date(r.updatedAt).toLocaleString('ja-JP')} · {r.revision.slice(0, 12)}
+                    {!r.available ? ' · GLB欠落' : ''}
+                  </option>
+                ))}
+            </select>
+          </label>
+          {selected && (
+            <>
+              <span>履歴を閲覧中 · 現在の登録内容は変更しません</span>
+              <button className="secondary" onClick={() => setSelected(null)}>
+                現在版へ戻る
+              </button>
+            </>
+          )}
+          {error && (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+      }
+    />
+  );
+}
+
+function DetailView({
+  asset: a,
+  currentAsset,
+  onBack,
+  onUpdate,
+  notify,
+  readOnly,
+  initialNote,
+  onOpenNote,
+  history,
+}: DetailProps & {
+  currentAsset: CatalogAsset;
+  readOnly: boolean;
+  initialNote?: ReviewNote;
+  onOpenNote: (note: ReviewNote) => void;
+  history: ReactNode;
 }) {
   const host = useRef<HTMLDivElement>(null),
     viewer = useRef<AssetViewer | null>(null);
-  const [ready, setReady] = useState(false),
+  const viewerKey = `${a.revision}:${a.behavior ?? ''}:${initialNote?.id ?? ''}:${readOnly}`;
+  const [readyKey, setReadyKey] = useState(''),
     [loadError, setLoadError] = useState(''),
-    [tab, setTab] = useState('info'),
+    [tab, setTab] = useState(initialNote ? 'notes' : 'info'),
     [mode, setMode] = useState('pbr'),
     [lighting, setLighting] = useState('studio'),
     [dimensions, setDimensions] = useState(''),
@@ -52,16 +163,23 @@ export function Detail({
       category: a.category,
     }),
     [formError, setFormError] = useState('');
-  const [loadRequested, setLoadRequested] = useState(
-    a.file.bytes < 25_000_000 && a.metrics.triangles < 500_000,
-  );
+  const [requestedKey, setRequestedKey] = useState('');
+  const ready = readyKey === viewerKey,
+    loadRequested =
+      requestedKey === viewerKey ||
+      !!initialNote ||
+      (a.file.bytes < 25_000_000 && a.metrics.triangles < 500_000);
   const review = useAssetNotes(a, viewer, ready, onUpdate, notify);
   useEffect(() => {
+    setReadyKey('');
+    setLoadError('');
+    setFormError('');
+    setDimensions('');
+    setMode('pbr');
+    setLighting('studio');
     if (!loadRequested) return;
     let v: AssetViewer | undefined,
       cancelled = false;
-    setReady(false);
-    setLoadError('');
     void import('./viewer.ts')
       .then(async ({ AssetViewer }) => {
         if (cancelled) return;
@@ -73,26 +191,32 @@ export function Detail({
           try {
             const behavior = await api<Behavior>('/api/behaviors/' + a.behavior);
             if (cancelled) return;
-            if (behavior.modelRevision !== a.revision)
-              setFormError(
-                'GLB更新前の動作設定が残っています。CLIから現在の版に設定し直してください。',
-              );
-            else {
-              v.behavior = behavior;
-              v.behaviorHash = a.behavior;
-            }
+            if (behavior.assetId !== a.id || behavior.modelRevision !== a.revision)
+              throw new Error('動作設定が表示中の版と一致しません。');
+            v.behavior = behavior;
+            v.behaviorHash = a.behavior;
           } catch (error) {
-            setFormError((error as Error).message);
+            if (!cancelled) setFormError((error as Error).message);
           }
         }
-        setReady(true);
+        if (initialNote) {
+          try {
+            if (initialNote.playback) await v.restorePlayback(initialNote.playback);
+            if (cancelled) return;
+            if (initialNote.camera) v.restore(initialNote.camera);
+          } catch (error) {
+            if (!cancelled) setFormError((error as Error).message);
+          }
+        }
+        if (cancelled) return;
+        setReadyKey(viewerKey);
         setDimensions(
           v.size
             .toArray()
             .map((n) => n.toFixed(2))
             .join(' × '),
         );
-        if (!a.thumbnail) {
+        if (!a.thumbnail && !readOnly) {
           try {
             const grid = v.grid;
             if (grid) grid.visible = false;
@@ -119,7 +243,7 @@ export function Detail({
       v?.dispose();
       viewer.current = null;
     };
-  }, [a.file.hash, loadRequested]);
+  }, [viewerKey, loadRequested]);
   async function saveEdit() {
     setBusy(true);
     setFormError('');
@@ -172,35 +296,41 @@ export function Detail({
           </button>
         </div>
         <div className="detail-actions">
-          <button
-            className="secondary"
-            onClick={async () => {
-              try {
-                saveFile('assets.lock.json', await api(`/api/assets/${a.id}/lock`));
-              } catch (error) {
-                setFormError((error as Error).message);
-              }
-            }}
-          >
-            <FileJson size={16} />
-            固定版を参照
-          </button>
+          {!readOnly && (
+            <button
+              className="secondary"
+              onClick={async () => {
+                try {
+                  saveFile('assets.lock.json', await api(`/api/assets/${a.id}/lock`));
+                } catch (error) {
+                  setFormError((error as Error).message);
+                }
+              }}
+            >
+              <FileJson size={16} />
+              固定版を参照
+            </button>
+          )}
           <a
             className={'primary ' + (!a.available ? 'disabled' : '')}
-            href={`/api/assets/${a.id}/download`}
+            href={readOnly ? '/api/files/' + a.file.hash : `/api/assets/${a.id}/download`}
+            download={a.id + '.glb'}
           >
             <Download size={16} />
             GLBを取得
           </a>
         </div>
       </div>
+      {history}
       {a.behavior && (
         <p className="subtle">
-          回転・点灯などの動作設定は「固定版を参照」とCLIのsyncで取得できます。GLB単体には含まれません。
+          {readOnly
+            ? '回転・点灯などの動作設定はGLB単体には含まれません。'
+            : '回転・点灯などの動作設定は「固定版を参照」とCLIのsyncで取得できます。GLB単体には含まれません。'}
         </p>
       )}
       <div className="detail-layout">
-        <section className="viewer-panel">
+        <section className="viewer-panel" key={viewerKey}>
           <div className="viewer-top">
             <span>
               <span className="online" />
@@ -245,7 +375,7 @@ export function Detail({
                     <div className="load-preview">
                       <strong>3Dプレビュー</strong>
                       <p>サイズの大きいモデルです。必要なときに読み込めます。</p>
-                      <button className="primary" onClick={() => setLoadRequested(true)}>
+                      <button className="primary" onClick={() => setRequestedKey(viewerKey)}>
                         3Dモデルを読み込む（{mb(a.file.bytes)}）
                       </button>
                     </div>
@@ -413,16 +543,18 @@ export function Detail({
                     </>
                   )}
                 </span>
-                <button
-                  onClick={() => {
-                    setEdit(!edit);
-                    setFormError('');
-                  }}
-                >
-                  {edit ? 'キャンセル' : '情報を編集'}
-                </button>
+                {!readOnly && (
+                  <button
+                    onClick={() => {
+                      setEdit(!edit);
+                      setFormError('');
+                    }}
+                  >
+                    {edit ? 'キャンセル' : '情報を編集'}
+                  </button>
+                )}
               </div>
-              {edit ? (
+              {edit && !readOnly ? (
                 <div className="edit-form">
                   <label>
                     名前
@@ -629,9 +761,17 @@ export function Detail({
           ) : (
             <NotesPanel
               asset={a}
+              currentAsset={currentAsset}
               review={review}
               canRestore={ready}
               onRestore={async (note) => {
+                if (
+                  note.revision !== a.revision ||
+                  (!!note.playback?.behavior && note.playback.behavior !== a.behavior)
+                ) {
+                  onOpenNote(note);
+                  return;
+                }
                 try {
                   if (note.camera) viewer.current?.restore(note.camera);
                   if (note.playback) await viewer.current?.restorePlayback(note.playback);

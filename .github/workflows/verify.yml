@@ -28,3 +28,17 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run build
       - run: npm run test:browser
+  blender:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libsm6 libxrender1 libxxf86vm1 libxi6 libxfixes3 libgl1
+      - name: Install Blender 5.2.2
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --location --retry 3 https://download.blender.org/release/Blender5.2/blender-5.2.2-linux-x64.tar.xz --output blender.tar.xz
+          echo '84098912789dc450e95697c4184fb8a90acbe5111c2ba4aede3fecb57806a168  blender.tar.xz' | sha256sum --check -
+          tar -xf blender.tar.xz
+          echo '${{ runner.temp }}/blender-5.2.2-linux-x64' >> "$GITHUB_PATH"
+      - run: npm run test:blender

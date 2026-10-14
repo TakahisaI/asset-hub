@@ -23,11 +23,29 @@ const behavior = behaviorSchema.parse({
   ],
 });
 asset.behavior = createHash('sha256').update(JSON.stringify(behavior)).digest('hex');
+const oldBytes = animatedGlb(true, 2, true),
+  oldAsset = await fixtureAsset(oldBytes, asset.id, '旧版の試験モデル'),
+  oldBehavior = behaviorSchema.parse({
+    schema: 1,
+    assetId: asset.id,
+    modelRevision: oldAsset.revision,
+    presets: [
+      { id: 'old-wind', name: '旧版の回転', rotations: [{ node: 1, axis: [0, 0, 1], rpm: 12 }] },
+    ],
+  }),
+  priorBehavior = behaviorSchema.parse({
+    ...oldBehavior,
+    modelRevision: asset.revision,
+  }),
+  oldBehaviorHash = createHash('sha256').update(JSON.stringify(oldBehavior)).digest('hex'),
+  priorBehaviorHash = createHash('sha256').update(JSON.stringify(priorBehavior)).digest('hex');
 await mkdir(path.join(temp, 'catalog/behaviors'), { recursive: true });
-await writeFile(
-  path.join(temp, 'catalog/behaviors', asset.behavior + '.json'),
-  JSON.stringify(behavior),
-);
+for (const [hash, data] of [
+  [asset.behavior, behavior],
+  [oldBehaviorHash, oldBehavior],
+  [priorBehaviorHash, priorBehavior],
+] as const)
+  await writeFile(path.join(temp, 'catalog/behaviors', hash + '.json'), JSON.stringify(data));
 await mkdir(path.join(temp, 'catalog/assets'), { recursive: true });
 await mkdir(path.join(temp, 'catalog/revisions', asset.id), { recursive: true });
 await mkdir(path.join(temp, '.store'), { recursive: true });
@@ -36,11 +54,16 @@ await writeFile(
   path.join(temp, 'catalog/revisions', asset.id, asset.revision + '.json'),
   JSON.stringify(asset),
 );
+await writeFile(
+  path.join(temp, 'catalog/revisions', asset.id, oldAsset.revision + '.json'),
+  JSON.stringify(oldAsset),
+);
 process.env.ASSET_HUB_ROOT = temp;
 const { root: libraryRoot } = await import('../server/store.ts');
 assert.equal(libraryRoot, temp);
 const { putBlob } = await import('../server/blobs.ts');
 await putBlob(bytes);
+await putBlob(oldBytes);
 const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: root,
   env: { ...process.env, PORT: '0', NODE_ENV: 'production', ASSET_HUB_ROOT: temp },
@@ -223,6 +246,173 @@ try {
     await page.getByRole('button', { name: '法線', exact: true }).getAttribute('aria-pressed'),
     'true',
   );
+  await page.unroute('**/api/catalog');
+  await page.reload();
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  const headFile = path.join(temp, 'catalog/assets', asset.id + '.json'),
+    headBefore = await readFile(headFile),
+    fixedBefore = await readFile(
+      path.join(temp, 'catalog/revisions', asset.id, oldAsset.revision + '.json'),
+    );
+  await page
+    .locator('select[aria-label="表示する版"] option[value="' + oldAsset.revision + '"]')
+    .waitFor({ state: 'attached' });
+  await page.getByRole('button', { name: '情報を編集', exact: true }).click();
+  await page.getByLabel('名前', { exact: true }).fill('未保存の名前');
+  const revisionSelect = page.getByLabel('表示する版', { exact: true });
+  await revisionSelect.focus();
+  await revisionSelect.selectOption(oldAsset.revision);
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  assert.equal(
+    await revisionSelect.evaluate((element) => document.activeElement === element),
+    true,
+  );
+  await page.getByText('履歴を閲覧中 · 現在の登録内容は変更しません', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '情報を編集', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '変更を保存', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '固定版を参照', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('alert').count(), 0);
+  assert.equal(await page.getByText(/回転・点灯などの動作設定は/).count(), 0);
+  assert.equal(
+    await page
+      .getByLabel('動作', { exact: true })
+      .locator('optgroup[label="動作プリセット"]')
+      .count(),
+    0,
+  );
+  const oldDownload = page.waitForEvent('download');
+  await page.getByRole('link', { name: 'GLBを取得', exact: true }).click();
+  const oldDownloaded = await oldDownload;
+  assert.equal(
+    createHash('sha256')
+      .update(await readFile((await oldDownloaded.path())!))
+      .digest('hex'),
+    oldAsset.revision,
+  );
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.getByRole('button', { name: '現在版へ戻る', exact: true }).click();
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  assert.equal(await page.getByLabel('名前', { exact: true }).inputValue(), '未保存の名前');
+  await page.getByRole('button', { name: 'キャンセル', exact: true }).click();
+  const playback = { preset: 'old-wind', time: 1.25, rotationTime: 7, speed: 2, loop: false };
+  for (const input of [
+    {
+      revision: oldAsset.revision,
+      text: '旧版と旧動作のメモ',
+      playback: { ...playback, behavior: oldBehaviorHash },
+    },
+    {
+      revision: asset.revision,
+      text: '現在のGLBと旧動作のメモ',
+      playback: { ...playback, behavior: priorBehaviorHash },
+    },
+    {
+      revision: asset.revision,
+      text: '現在版と現在動作のメモ',
+      playback: { ...playback, preset: 'breeze', behavior: asset.behavior },
+    },
+  ]) {
+    const response = await fetch(base + '/api/assets/' + asset.id + '/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...input, camera: { position: [3, 3, 3], target: [0, 2, 0] } }),
+    });
+    assert.equal(response.status, 201);
+  }
+  await page.reload();
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: '確認メモ 4', exact: true }).click();
+  const noteDraft = page.getByLabel('確認メモ', { exact: true }),
+    currentNote = page.locator('.note').filter({ hasText: '現在版と現在動作のメモ' }),
+    oldNote = page.locator('.note').filter({ hasText: '旧版と旧動作のメモ' });
+  await noteDraft.fill('版を切り替えても残す下書き');
+  const openedFiles: string[] = [],
+    openedBehaviors: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/files/')) openedFiles.push(url.pathname);
+    if (url.pathname.startsWith('/api/behaviors/')) openedBehaviors.push(url.pathname);
+  });
+  await oldNote.getByRole('button', { name: 'この版の状態を開く' }).click();
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  assert.equal(await noteDraft.inputValue(), '版を切り替えても残す下書き');
+  assert.equal(await currentNote.getByText(/旧版へのメモ|旧動作設定/).count(), 0);
+  assert.match(await oldNote.locator('.note-revision').innerText(), /旧版へのメモ.*旧動作設定/);
+  assert.equal(
+    await page.getByLabel('表示する版', { exact: true }).inputValue(),
+    oldAsset.revision,
+  );
+  assert.equal(await page.getByLabel('動作', { exact: true }).inputValue(), 'preset:old-wind');
+  assert.equal(await page.getByLabel('再生時刻', { exact: true }).innerText(), '1.25 / 10.00s');
+  assert.equal(await page.getByLabel('再生速度', { exact: true }).inputValue(), '2');
+  assert.equal(await page.getByLabel('ループ', { exact: true }).isChecked(), false);
+  assert.ok(openedFiles.includes('/api/files/' + oldAsset.revision));
+  assert.ok(openedBehaviors.includes('/api/behaviors/' + oldBehaviorHash));
+  const restored = await page.locator('.viewport canvas').screenshot();
+  await page.getByRole('button', { name: '上面', exact: true }).click();
+  assert.notDeepEqual(await page.locator('.viewport canvas').screenshot(), restored);
+  await page
+    .locator('.note')
+    .filter({ hasText: '旧版と旧動作のメモ' })
+    .getByRole('button', { name: '視点を復元' })
+    .click();
+  await page.getByLabel('確認メモ', { exact: true }).fill('復元状態の確認');
+  await page.getByRole('button', { name: '確認メモを保存', exact: true }).click();
+  await page.getByText('復元状態の確認', { exact: true }).waitFor();
+  const restoredNotes = JSON.parse(
+    await readFile(path.join(temp, 'catalog/reviews', asset.id + '.json'), 'utf8'),
+  );
+  const restoredState = restoredNotes.find((n: { text: string }) => n.text === '復元状態の確認');
+  assert.equal(restoredState.revision, oldAsset.revision);
+  assert.deepEqual(restoredState.playback, { ...playback, behavior: oldBehaviorHash });
+  for (const [key, expected] of [
+    ['position', [3, 3, 3]],
+    ['target', [0, 2, 0]],
+  ] as const)
+    restoredState.camera[key].forEach((value: number, i: number) =>
+      assert.ok(Math.abs(value - expected[i]) < 1e-6),
+    );
+  await page
+    .locator('.note')
+    .filter({ hasText: '現在のGLBと旧動作のメモ' })
+    .getByRole('button', { name: 'この版の状態を開く' })
+    .click();
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  assert.equal(await page.getByLabel('表示する版', { exact: true }).inputValue(), asset.revision);
+  assert.equal(await page.getByLabel('動作', { exact: true }).inputValue(), 'preset:old-wind');
+  assert.ok(openedBehaviors.includes('/api/behaviors/' + priorBehaviorHash));
+  assert.equal(await currentNote.getByText(/旧版へのメモ|旧動作設定/).count(), 0);
+  await noteDraft.fill('現在版へ戻っても残す下書き');
+  await page.getByRole('button', { name: '現在版へ戻る', exact: true }).click();
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  assert.equal(await noteDraft.inputValue(), '現在版へ戻っても残す下書き');
+  await revisionSelect.focus();
+  await revisionSelect.selectOption(oldAsset.revision);
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  assert.equal(await noteDraft.inputValue(), '現在版へ戻っても残す下書き');
+  assert.equal(
+    await revisionSelect.evaluate((element) => document.activeElement === element),
+    true,
+  );
+  await revisionSelect.selectOption(asset.revision);
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  assert.equal(await noteDraft.inputValue(), '現在版へ戻っても残す下書き');
+  assert.equal(
+    await revisionSelect.evaluate((element) => document.activeElement === element),
+    true,
+  );
+  assert.equal(
+    await page.getByLabel('動作', { exact: true }).locator('option[value="preset:breeze"]').count(),
+    1,
+  );
+  assert.deepEqual(await readFile(headFile), headBefore);
+  assert.deepEqual(
+    await readFile(path.join(temp, 'catalog/revisions', asset.id, oldAsset.revision + '.json')),
+    fixedBefore,
+  );
+  await assert.rejects(() => readFile(path.join(temp, '.store', oldAsset.revision + '.png')), {
+    code: 'ENOENT',
+  });
   await writeFile(path.join(temp, 'catalog/assets/broken.json'), '{broken');
   await page.goto(base);
   await page.getByRole('alert').getByText('1件のファイルを読み込めませんでした').waitFor();
@@ -237,14 +427,14 @@ try {
   const notes = JSON.parse(
     await readFile(path.join(temp, 'catalog/reviews', asset.id + '.json'), 'utf8'),
   );
-  assert.equal(notes.length, 1);
+  assert.equal(notes.length, 5);
   assert.equal(notes[0].resolved, true);
   assert.equal(notes[0].revision, asset.revision);
   assert.ok(notes[0].camera);
   assert.equal(notes[0].playback.clip, 0);
   assert.equal(notes[0].playback.time, 0.75);
   console.log(
-    'Browser PASS: 3D load, one-click modes, metadata/collections persistence, notes/camera/resolve, lock download, GLB upload, modal focus, search, mobile grid/list/detail, deferred heavy model, partial catalog failure.',
+    'Browser PASS: 3D load, one-click modes, metadata/collections persistence, notes/camera/resolve, read-only revision history, revision-switch drafts/focus, revision behavior isolation, current-head note labels, old GLB/behavior/camera restoration, lock/GLB download, GLB upload, modal focus, search, mobile grid/list/detail, deferred heavy model, partial catalog failure.',
   );
 } finally {
   await b.close();

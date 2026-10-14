@@ -69,11 +69,13 @@ export function useAssetNotes(
 
 export function NotesPanel({
   asset: a,
+  currentAsset,
   review,
   canRestore,
   onRestore,
 }: {
   asset: CatalogAsset;
+  currentAsset: CatalogAsset;
   review: ReturnType<typeof useAssetNotes>;
   canRestore: boolean;
   onRestore: (note: ReviewNote) => void;
@@ -116,21 +118,28 @@ export function NotesPanel({
               <p>{n.text}</p>
               <div className="note-revision">
                 版 {n.revision.slice(0, 10)}
-                {n.revision !== a.revision ? ' · 旧版へのメモ' : ''}
+                {n.revision !== currentAsset.revision ? ' · 旧版へのメモ' : ''}
                 {n.playback &&
                   ` · ${n.playback.preset ?? 'clip ' + n.playback.clip} / ${n.playback.time.toFixed(2)}秒`}
-                {n.playback?.behavior && n.playback.behavior !== a.behavior ? ' · 旧動作設定' : ''}
+                {n.playback?.behavior && n.playback.behavior !== currentAsset.behavior
+                  ? ' · 旧動作設定'
+                  : ''}
               </div>
               <div className="note-actions">
-                {n.camera && n.revision === a.revision && (
+                {(n.camera || n.playback || n.revision !== a.revision) && (
                   <button
                     disabled={
-                      !canRestore || (!!n.playback?.behavior && n.playback.behavior !== a.behavior)
+                      !canRestore &&
+                      n.revision === a.revision &&
+                      (!n.playback?.behavior || n.playback.behavior === a.behavior)
                     }
                     onClick={() => onRestore(n)}
                   >
                     <Camera size={12} />
-                    視点を復元
+                    {n.revision !== a.revision ||
+                    (!!n.playback?.behavior && n.playback.behavior !== a.behavior)
+                      ? 'この版の状態を開く'
+                      : '視点を復元'}
                   </button>
                 )}
                 <button disabled={busy} onClick={() => toggleNote(n)}>
