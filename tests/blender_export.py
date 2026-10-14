@@ -370,11 +370,12 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
     links.new(bump.outputs['Normal'], shader.inputs['Normal'])
     # Force the color helper path too, so normals cannot accidentally reuse its transforms.
     links.new(separate.outputs['X'], shader.inputs['Base Color'])
-    for i, scale in enumerate([(1, 1, 1), (4, 1, 1)]):
+    for i, scale in enumerate([(1, 1, 1), (4, 1, 1), (4, 1, 1)]):
         bpy.ops.mesh.primitive_plane_add(location=(i * 10, 0, 0))
         obj = bpy.context.object
         obj.name = 'scaled ' + str(i)
         obj.scale = scale
+        obj.rotation_euler.z = 0.4
         part_material = material.copy()
         next(n for n in part_material.node_tree.nodes if n.type == 'BUMP').inputs['Distance'].default_value = 0.05 if i == 0 else 0.9
         obj.data.materials.append(part_material)
