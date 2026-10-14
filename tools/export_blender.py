@@ -116,7 +116,9 @@ def needs_color_bake(socket):
     if not socket.is_linked:
         return False
     node = socket.links[0].from_node
-    if node.type in {'RGB', 'VERTEX_COLOR'}:
+    if socket.type == 'RGBA' and node.type in {'RGB', 'VERTEX_COLOR'}:
+        return False
+    if socket.type == 'VALUE' and node.type == 'VALUE':
         return False
     if node.type == 'TEX_IMAGE':
         vector = node.inputs['Vector']
@@ -130,24 +132,74 @@ def needs_color_bake(socket):
     return True
 
 
+def needs_normal_bake(socket):
+    if not socket.is_linked:
+        return False
+    node = socket.links[0].from_node
+    if node.type == 'NORMAL_MAP':
+        color = node.inputs['Color']
+        if node.space == 'TANGENT' and not color.is_linked and tuple(color.default_value[:3]) == (0.5, 0.5, 1):
+            return False
+        return (node.space != 'TANGENT' or node.inputs['Strength'].is_linked
+                or not color.is_linked or color.links[0].from_node.type != 'TEX_IMAGE'
+                or needs_color_bake(color))
+    return True
+
+
+CHANNEL_SOCKETS = {'color': 'Base Color', 'roughness': 'Roughness', 'metallic': 'Metallic'}
+CHANNEL_IMAGES = {
+    'color': ('Asset Hub base color', 'sRGB'),
+    'roughness': ('Asset Hub roughness', 'Non-Color'),
+    'metallic': ('Asset Hub metallic', 'Non-Color'),
+    'normal': ('Asset Hub normal', 'Non-Color'),
+}
+
+
+def principled_shader(material):
+    if not material.use_nodes:
+        return None, None
+    nodes = material.node_tree.nodes
+    output = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL' and n.is_active_output), None)
+    if not output or not output.inputs['Surface'].is_linked:
+        return None, None
+    shader = output.inputs['Surface'].links[0].from_node
+    return (output, shader) if shader.type == 'BSDF_PRINCIPLED' else (None, None)
+
+
+def baked_channels(material):
+    _, shader = principled_shader(material)
+    if not shader:
+        return set()
+    channels = set()
+    if needs_color_bake(shader.inputs['Base Color']):
+        channels.add('color')
+    if needs_color_bake(shader.inputs['Roughness']):
+        channels.add('roughness')
+    if needs_color_bake(shader.inputs['Metallic']):
+        channels.add('metallic')
+    # glTF packs both scalars into one texture, so linked images must share its UVs.
+    if channels & {'roughness', 'metallic'}:
+        for channel in ['roughness', 'metallic']:
+            socket = shader.inputs[CHANNEL_SOCKETS[channel]]
+            if socket.is_linked and socket.links[0].from_node.type != 'VALUE':
+                channels.add(channel)
+    if needs_normal_bake(shader.inputs['Normal']):
+        channels.add('normal')
+    return channels
+
+
 def bake_base_colors(objects, size):
     materials = {slot.material for obj in objects for slot in obj.material_slots if slot.material}
     targets = {}
     for material in sorted(materials, key=lambda m: m.name):
-        if not material.use_nodes:
-            continue
-        nodes = material.node_tree.nodes
-        output = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL' and n.is_active_output), None)
-        if not output or not output.inputs['Surface'].is_linked:
-            continue
-        shader = output.inputs['Surface'].links[0].from_node
-        if shader.type == 'BSDF_PRINCIPLED' and needs_color_bake(shader.inputs['Base Color']):
-            targets[material] = (output, shader)
+        channels = baked_channels(material)
+        if channels:
+            targets[material] = channels
     if not targets:
-        return []
+        return {channel: [] for channel in CHANNEL_IMAGES}
     meshes = [o for o in objects if o.type == 'MESH' and any(s.material in targets for s in o.material_slots)]
     if not meshes:
-        raise ValueError('Procedural base colors have no directly bakeable meshes')
+        raise ValueError('Procedural materials have no directly bakeable meshes')
     uv_name = 'AssetHubBaseColor'
     for obj in meshes:
         if obj.data.shape_keys or any(m.type == 'ARMATURE' for m in obj.modifiers):
@@ -163,10 +215,14 @@ def bake_base_colors(objects, size):
     bpy.ops.mesh.select_all(action='SELECT')
     bpy.ops.uv.smart_project(angle_limit=1.1519, margin_method='FRACTION', island_margin=2 / size)
     bpy.ops.object.mode_set(mode='OBJECT')
-    print('Baking base color', size, 'px', flush=True)
 
-    image = bpy.data.images.new('Asset Hub base color', width=size, height=size, alpha=False)
-    image.colorspace_settings.name = 'sRGB'
+    needed = set().union(*targets.values())
+    images = {}
+    for channel in needed:
+        name, colorspace = CHANNEL_IMAGES[channel]
+        image = bpy.data.images.new(name, width=size, height=size, alpha=False)
+        image.colorspace_settings.name = colorspace
+        images[channel] = image
     scene = bpy.context.scene
     scene.render.engine = 'CYCLES'
     scene.cycles.samples = 1
@@ -174,45 +230,104 @@ def bake_base_colors(objects, size):
     scene.render.bake.use_selected_to_active = False
     scene.render.bake.margin = 16
     scene.render.bake.margin_type = 'EXTEND'
-    saved = []
-    # Emission bakes the color expression itself, including metallic materials, without lighting.
-    for material, (output, shader) in targets.items():
-        nodes, links = material.node_tree.nodes, material.node_tree.links
-        texture = nodes.new('ShaderNodeTexImage')
-        texture.image = image
-        nodes.active = texture
-        emission = nodes.new('ShaderNodeEmission')
-        links.new(shader.inputs['Base Color'].links[0].from_socket, emission.inputs['Color'])
-        links.new(emission.outputs[0], output.inputs['Surface'])
-        saved.append((material, output, shader, texture, emission))
-    # Other slots on these objects also need a bake target; their materials remain unchanged.
-    extra = []
-    for material in {s.material for o in meshes for s in o.material_slots if s.material} - targets.keys():
+
+    involved = {s.material for o in meshes for s in o.material_slots if s.material}
+    for material in involved:
         if not material.use_nodes:
             raise ValueError('Mixed non-node material cannot be baked: ' + material.name)
-        texture = material.node_tree.nodes.new('ShaderNodeTexImage')
-        texture.image = image
-        material.node_tree.nodes.active = texture
-        extra.append((material, texture))
-    helper = joined_bake_mesh(meshes)
+    # Every material on the baked meshes needs an active bake target per pass.
+    textures = {}
+    for material in involved:
+        for channel, image in images.items():
+            texture = material.node_tree.nodes.new('ShaderNodeTexImage')
+            texture.image = image
+            textures[(material, channel)] = texture
+    helper = joined_bake_mesh(meshes) if needed - {'normal'} else None
+    bake_materials = [m for m in helper.data.materials if m] if helper else list(involved)
+
+    def set_active(channel, materials):
+        for material in materials:
+            for node in material.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.image == images[channel]:
+                    material.node_tree.nodes.active = node
+                    break
+
     try:
-        bpy.ops.object.bake(type='EMIT', uv_layer=uv_name)
+        for channel in ['color', 'roughness', 'metallic']:
+            if channel not in images:
+                continue
+            print('Baking', channel, size, 'px', flush=True)
+            set_active(channel, bake_materials)
+            saved = []
+            # Emission bakes the channel expression itself, without lighting.
+            for material in bake_materials:
+                if channel not in baked_channels(material):
+                    continue
+                output, shader = principled_shader(material)
+                nodes, links = material.node_tree.nodes, material.node_tree.links
+                emission = nodes.new('ShaderNodeEmission')
+                source = shader.inputs[CHANNEL_SOCKETS[channel]]
+                value = source.links[0].from_socket
+                scalar = None
+                if channel != 'color':
+                    # A float socket preserves Blender's color-to-value conversion.
+                    scalar = nodes.new('ShaderNodeMath')
+                    scalar.operation = 'MULTIPLY'
+                    scalar.inputs[1].default_value = 1
+                    scalar.use_clamp = True
+                    links.new(value, scalar.inputs[0])
+                    value = scalar.outputs[0]
+                links.new(value, emission.inputs['Color'])
+                links.new(emission.outputs[0], output.inputs['Surface'])
+                saved.append((material, output, shader, emission, scalar))
+            try:
+                bpy.ops.object.bake(type='EMIT', uv_layer=uv_name)
+            finally:
+                for material, output, shader, emission, scalar in saved:
+                    nodes, links = material.node_tree.nodes, material.node_tree.links
+                    links.new(shader.outputs[0], output.inputs['Surface'])
+                    nodes.remove(emission)
+                    if scalar:
+                        nodes.remove(scalar)
     finally:
         if helper:
             bpy.data.objects.remove(helper, do_unlink=True)
-    print('Base color baked', flush=True)
-    for material, texture in extra:
-        material.node_tree.nodes.remove(texture)
-    for material, output, shader, texture, emission in saved:
+    if 'normal' in images:
+        print('Baking normal', size, 'px', flush=True)
+        set_active('normal', involved)
+        scene.render.bake.normal_space = 'TANGENT'
+        scene.render.bake.normal_r = 'POS_X'
+        scene.render.bake.normal_g = 'POS_Y'
+        scene.render.bake.normal_b = 'POS_Z'
+        # Separate passes must keep padding inside the atlas's two-pixel island gap.
+        scene.render.bake.margin = 1
+        # Joining changes tangent space when objects have different nonuniform scales.
+        for obj in meshes:
+            select([obj])
+            bpy.ops.object.bake(type='NORMAL', uv_layer=uv_name)
+    print('PBR channels baked', flush=True)
+
+    for material, channels in targets.items():
         nodes, links = material.node_tree.nodes, material.node_tree.links
-        links.new(shader.outputs[0], output.inputs['Surface'])
-        nodes.remove(emission)
+        _, shader = principled_shader(material)
         uv = nodes.new('ShaderNodeUVMap')
         uv.uv_map = uv_name
-        links.new(uv.outputs['UV'], texture.inputs['Vector'])
-        links.new(texture.outputs['Color'], shader.inputs['Base Color'])
-    image.pack()
-    return [m.name for m in targets]
+        for channel in channels:
+            texture = textures[(material, channel)]
+            links.new(uv.outputs['UV'], texture.inputs['Vector'])
+            if channel == 'normal':
+                normal_map = nodes.new('ShaderNodeNormalMap')
+                normal_map.uv_map = uv_name
+                links.new(texture.outputs['Color'], normal_map.inputs['Color'])
+                links.new(normal_map.outputs['Normal'], shader.inputs['Normal'])
+            else:
+                links.new(texture.outputs['Color'], shader.inputs[CHANNEL_SOCKETS[channel]])
+    for (material, channel), texture in textures.items():
+        if channel not in targets.get(material, set()):
+            material.node_tree.nodes.remove(texture)
+    for image in images.values():
+        image.pack()
+    return {channel: sorted(m.name for m, c in targets.items() if channel in c) for channel in CHANNEL_IMAGES}
 
 
 def export_blend(source, destination, exclude_prefixes=(), size=2048):
@@ -231,10 +346,8 @@ def export_blend(source, destination, exclude_prefixes=(), size=2048):
         raise ValueError('No visible asset objects')
     bpy.context.scene.frame_set(bpy.context.scene.frame_start)
     instances = [o for o in objects if o.instance_type == 'COLLECTION' and o.instance_collection and any(
-        slot.material and slot.material.node_tree and any(
-            n.type == 'BSDF_PRINCIPLED' and needs_color_bake(n.inputs['Base Color'])
-            for n in slot.material.node_tree.nodes
-        ) for child in o.instance_collection.all_objects for slot in child.material_slots
+        slot.material and baked_channels(slot.material)
+        for child in o.instance_collection.all_objects for slot in child.material_slots
     )]
     for obj in instances:
         if any(o.instance_type == 'COLLECTION' and o.instance_collection for o in obj.instance_collection.all_objects):
@@ -270,12 +383,15 @@ def export_blend(source, destination, exclude_prefixes=(), size=2048):
             'glbHash': hashlib.sha256(data).hexdigest(),
             'animationMode': 'ACTIVE_ACTIONS',
             'excludedCollectionPrefixes': list(exclude_prefixes),
-            'bakedBaseColorMaterials': baked,
-            'baseColorAtlasSize': size if baked else None,
+            'bakedBaseColorMaterials': baked['color'],
+            'bakedRoughnessMaterials': baked['roughness'],
+            'bakedMetallicMaterials': baked['metallic'],
+            'bakedNormalMaterials': baked['normal'],
+            'baseColorAtlasSize': size if any(baked.values()) else None,
             'selectedObjects': len(objects),
             'convertedCurves': len(curves) + instance_curves,
             'realizedInstances': len(instances),
-            'limitations': 'Base color baked at the first frame. Procedural normals, roughness, volumes and animated shader expressions are not baked.',
+            'limitations': 'Procedural base color, roughness, metallic and normals baked at the first frame. Procedural volumes, subsurface, transmission and animated shader expressions are not baked.',
         }
         with destination.open('xb') as stream:
             stream.write(data)

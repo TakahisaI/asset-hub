@@ -162,7 +162,7 @@ try {
   await page.getByRole('button', { name: '確認メモ 0', exact: true }).click();
   await page.getByLabel('確認メモ', { exact: true }).fill('部材の接続位置を再確認する');
   await page.getByRole('button', { name: '確認メモを保存', exact: true }).click();
-  await page.getByText('部材の接続位置を再確認する', { exact: true }).waitFor();
+  await page.locator('.note').getByText('部材の接続位置を再確認する', { exact: true }).waitFor();
   await page.getByRole('button', { name: '視点を復元' }).click();
   await page.getByRole('button', { name: '解決済みにする' }).click();
   await page.getByText('解決済み', { exact: true }).waitFor();
@@ -358,7 +358,7 @@ try {
     .click();
   await page.getByLabel('確認メモ', { exact: true }).fill('復元状態の確認');
   await page.getByRole('button', { name: '確認メモを保存', exact: true }).click();
-  await page.getByText('復元状態の確認', { exact: true }).waitFor();
+  await page.locator('.note').getByText('復元状態の確認', { exact: true }).waitFor();
   const restoredNotes = JSON.parse(
     await readFile(path.join(temp, 'catalog/reviews', asset.id + '.json'), 'utf8'),
   );
