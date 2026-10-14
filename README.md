@@ -48,6 +48,17 @@ npm run -s assetctl -- import --manifest imports.json --update
 
 一括取り込みは `{ "schema": 1, "assets": [{ "id": "prop.wheel", "name": "水車", "file": "wheel.glb" }] }`。ローカルの `file` はmanifestからの相対パスです。GitHubから取得する場合は `download: {repository, commit, path}` を指定します。制作出典の `source` と配布ファイルの取得先 `download` は独立しています。`commit` は40文字の固定SHA、プライベートリポジトリの読み取りには `gh` のログインが必要です。各項目の成功・失敗をJSONで返します。
 
+### Blenderからの書き出し
+
+```sh
+blender --background --python-exit-code 1 --python tools/export_blender.py -- \
+  /path/to/source.blend /path/to/new-export.glb --exclude-collection-prefix STUDIO
+```
+
+Principled BSDFのベースカラーにつながるプロシージャル材質をテクスチャへベイクしてからGLBを書き出します。原本は保存し直さず、出力先には新しいパスを指定します。`--exclude-collection-prefix` は撮影用などのコレクションを除外する任意指定、`--size` はベイク画像の一辺（既定2048px）です。隣のJSONに原本・出力・書き出し処理のハッシュとベイク対象を記録します。
+
+色は開始フレームで固定します。プロシージャルな凹凸・粗さ・ボリューム・材質アニメーションのベイクは対象外です。リグ付きメッシュの色ベイク、動きのある・入れ子のコレクションインスタンスは制作側で処理してください。動く部品のノードと埋め込みクリップは保持します。Blender 5.2で検証しています。
+
 ## 動作とモーション
 
 GLBの埋め込みクリップを選択して再生・一時停止・時刻指定・速度変更できます。動作設定はモデルの固定版に紐付けます。
@@ -141,6 +152,7 @@ npm run validate:assets -- --json
 npm run validate:assets -- --report .cache/validation.json
 npm run -s assetctl -- gc --dry-run
 npm run thumbnails  # 別ターミナルでnpm run devを起動
+blender --background --threads 2 --python-exit-code 1 --python tests/blender_export.py
 ```
 
 検証・容量確認は台帳と圧縮保存データを変更しません。復元キャッシュは作成されます。GLBの欠落や仕様違反、古い動作設定を報告します。仕様エラーのある制作途中のGLBも登録でき、検査結果を詳細画面で確認できます。コンテナが壊れたGLBや外部ファイル参照は拒否します。容量確認は旧版・動作設定・解決済みメモの参照も保持し、外部プロジェクトのlockは走査しません。
