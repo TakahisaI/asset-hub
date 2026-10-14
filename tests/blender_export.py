@@ -375,7 +375,9 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
         obj = bpy.context.object
         obj.name = 'scaled ' + str(i)
         obj.scale = scale
-        obj.data.materials.append(material)
+        part_material = material.copy()
+        next(n for n in part_material.node_tree.nodes if n.type == 'BUMP').inputs['Distance'].default_value = 0.05 if i == 0 else 0.9
+        obj.data.materials.append(part_material)
     bpy.context.scene.render.bake.normal_r = 'NEG_X'
     bpy.context.scene.render.bake.normal_g = 'NEG_Y'
     bpy.context.scene.render.bake.normal_b = 'NEG_Z'
@@ -390,30 +392,90 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
     scene = bpy.context.scene
     scene.render.engine = 'CYCLES'
     scene.cycles.samples = 1
-    scene.render.bake.use_clear = False
+    scene.render.bake.use_clear = True
     scene.render.bake.use_selected_to_active = False
     scene.render.bake.normal_space = 'TANGENT'
     scene.render.bake.normal_r, scene.render.bake.normal_g, scene.render.bake.normal_b = 'POS_X', 'POS_Y', 'POS_Z'
     reference = bpy.data.images.new('reference', width=512, height=512, alpha=False)
     reference.colorspace_settings.name = 'Non-Color'
-    material = bpy.data.materials['scaled linear bump']
-    texture = material.node_tree.nodes.new('ShaderNodeTexImage')
-    texture.image = reference
-    material.node_tree.nodes.active = texture
+    reference_pixels = {}
     for name, coords in atlas.items():
         obj = bpy.data.objects[name]
+        material = obj.data.materials[0]
+        texture = material.node_tree.nodes.new('ShaderNodeTexImage')
+        texture.image = reference
+        material.node_tree.nodes.active = texture
         uv = obj.data.uv_layers.new(name='reference')
         obj.data.uv_layers.active = uv
         for loop, point in zip(uv.data, coords):
             loop.uv = point
         export_blender.select([obj])
         bpy.ops.object.bake(type='NORMAL', uv_layer=uv.name)
-    reference_pixels = np.array(reference.pixels[:]).reshape(512, 512, 4)
+        reference_pixels[name] = np.array(reference.pixels[:]).reshape(512, 512, 4)
     for name, coords in atlas.items():
         center = sum(coords, Vector((0, 0))) / len(coords)
-        for point in [center, *[(center + coord) * 0.5 for coord in coords]]:
+        for point in [center, *[center * 0.03 + coord * 0.97 for coord in coords]]:
             x, y = int(point.x * 512), int(point.y * 512)
-            assert max(abs(actual[y, x, :3] - reference_pixels[y, x, :3])) < 0.008, (
-                name, actual[y, x, :3], reference_pixels[y, x, :3]
+            assert max(abs(actual[y, x, :3] - reference_pixels[name][y, x, :3])) < 0.008, (
+                name, actual[y, x, :3], reference_pixels[name][y, x, :3]
             )
     print('PASS: nonuniform object scales and saved normal-axis settings match individual +XYZ bakes')
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    normal_cases = ['RGB', 'Constant', 'Strength', 'OBJECT', 'WORLD', 'Image', 'Neutral']
+    for i, case in enumerate(normal_cases):
+        material = bpy.data.materials.new(case)
+        material.use_nodes = True
+        nodes, links = material.node_tree.nodes, material.node_tree.links
+        normal = nodes.new('ShaderNodeNormalMap')
+        links.new(normal.outputs['Normal'], nodes.get('Principled BSDF').inputs['Normal'])
+        color = (0.8, 0.7, 1, 1)
+        if case == 'RGB':
+            rgb = nodes.new('ShaderNodeRGB')
+            rgb.outputs[0].default_value = color
+            links.new(rgb.outputs[0], normal.inputs['Color'])
+        elif case == 'Constant':
+            normal.inputs['Color'].default_value = color
+        elif case != 'Neutral':
+            image = bpy.data.images.new('source normal ' + case, width=4, height=4)
+            image.colorspace_settings.name = 'Non-Color'
+            image.pixels[:] = list(color) * 16
+            image.pack()
+            texture = nodes.new('ShaderNodeTexImage')
+            texture.image = image
+            links.new(texture.outputs['Color'], normal.inputs['Color'])
+            if case == 'Strength':
+                noise = nodes.new('ShaderNodeTexNoise')
+                links.new(noise.outputs['Fac'], normal.inputs['Strength'])
+            elif case in ['OBJECT', 'WORLD']:
+                normal.space = case
+            else:
+                normal.inputs['Strength'].default_value = 0.4
+        bpy.ops.mesh.primitive_plane_add(location=(i * 3, 0, 0))
+        obj = bpy.context.object
+        obj.name = case
+        obj.data.materials.append(material)
+        if case in ['Image', 'Neutral']:
+            obj.shape_key_add(name='Basis')
+            obj.shape_key_add(name='Raised').data[0].co.z += 0.5
+    maps_source, maps_target = directory / 'normal-maps.blend', directory / 'normal-maps.glb'
+    bpy.ops.wm.save_as_mainfile(filepath=str(maps_source))
+    maps_report = export_blend(maps_source, maps_target, size=512)
+    assert set(maps_report['bakedNormalMaterials']) == set(normal_cases) - {'Image', 'Neutral'}
+    data = maps_target.read_bytes()
+    gltf = json.loads(data[20:20 + struct.unpack_from('<I', data, 12)[0]])
+    for material in gltf['materials']:
+        if material['name'] == 'Neutral':
+            assert 'normalTexture' not in material
+        else:
+            assert 'normalTexture' in material, material
+            expected_scale = 0.4 if material['name'] == 'Image' else 1
+            assert abs(material['normalTexture'].get('scale', 1) - expected_scale) < 1e-6
+    pixels = np.array(bpy.data.images['Asset Hub normal'].pixels[:]).reshape(512, 512, 4)
+    for case in set(normal_cases) - {'Image', 'Neutral'}:
+        obj = bpy.data.objects[case]
+        coords = [loop.uv for loop in obj.data.uv_layers['AssetHubBaseColor'].data]
+        center = sum(coords, Vector((0, 0))) / len(coords)
+        sample = pixels[int(center.y * 512), int(center.x * 512), :3]
+        assert max(abs(sample - [0.5, 0.5, 1])) > 0.05, (case, sample)
+    print('PASS: constant normal colors, procedural strength and object/world maps bake; direct tangent images pass through')

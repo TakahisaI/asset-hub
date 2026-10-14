@@ -137,7 +137,12 @@ def needs_normal_bake(socket):
         return False
     node = socket.links[0].from_node
     if node.type == 'NORMAL_MAP':
-        return needs_color_bake(node.inputs['Color'])
+        color = node.inputs['Color']
+        if node.space == 'TANGENT' and not color.is_linked and tuple(color.default_value[:3]) == (0.5, 0.5, 1):
+            return False
+        return (node.space != 'TANGENT' or node.inputs['Strength'].is_linked
+                or not color.is_linked or color.links[0].from_node.type != 'TEX_IMAGE'
+                or needs_color_bake(color))
     return True
 
 
@@ -294,6 +299,8 @@ def bake_base_colors(objects, size):
         scene.render.bake.normal_r = 'POS_X'
         scene.render.bake.normal_g = 'POS_Y'
         scene.render.bake.normal_b = 'POS_Z'
+        # Separate passes must keep padding inside the atlas's two-pixel island gap.
+        scene.render.bake.margin = 1
         # Joining changes tangent space when objects have different nonuniform scales.
         for obj in meshes:
             select([obj])
