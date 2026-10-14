@@ -1,6 +1,6 @@
 import express from 'express';
 import path from 'node:path';
-import { readFile, writeFile, rename } from 'node:fs/promises';
+import { writeFile, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { ZodError, z } from 'zod';
 import {
@@ -12,9 +12,10 @@ import {
   getBehavior,
   setBehavior,
   clearBehavior,
+  getRevision,
 } from './operations.ts';
 import { hashSchema, idSchema } from '../src/schema.ts';
-import { withBlob } from './blobs.ts';
+import { withBlob, blobAvailable } from './blobs.ts';
 import { inspectStorage } from '../tools/storage.ts';
 import { getCatalog } from './catalog.ts';
 import { createLock } from '../tools/assetctl.ts';
@@ -26,6 +27,8 @@ import {
   getNotes,
   withLibraryLock,
   exists,
+  directoryEntries,
+  fileStat,
 } from './store.ts';
 export function createApp() {
   const app = express();
@@ -135,13 +138,19 @@ export function createApp() {
   });
   app.get('/api/assets/:id/revisions', async (req, res) => {
     const a = await getAsset(req.params.id);
-    const { readdir } = await import('node:fs/promises');
     const dir = path.join(root, 'catalog/revisions', a.id);
     res.json(
       await Promise.all(
-        (await readdir(dir))
-          .filter((f) => f.endsWith('.json'))
-          .map(async (f) => JSON.parse(await readFile(path.join(dir, f), 'utf8'))),
+        (await directoryEntries(dir))
+          .filter((f) => f.name.endsWith('.json'))
+          .map(async (f) => {
+            const revision = await getRevision(a.id, f.name.slice(0, -5));
+            return {
+              ...revision,
+              available: await blobAvailable(revision.revision),
+              thumbnail: !!(await fileStat(path.join(storeDir, revision.revision + '.png'))),
+            };
+          }),
       ),
     );
   });

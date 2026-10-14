@@ -16,6 +16,7 @@
     "thumbnails": "tsx tools/thumbnails.ts",
     "assetctl": "tsx tools/assetctl.ts",
     "test:browser": "tsx tests/browser.ts",
+    "test:blender": "blender --background --threads 2 --python-exit-code 1 --python tests/blender_export.py",
     "validate:assets": "tsx tools/validate.ts",
     "format:check": "prettier --check .",
     "verify:full": "npm run format:check && npm run verify && npm run test:browser"

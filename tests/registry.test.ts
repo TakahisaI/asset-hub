@@ -148,6 +148,54 @@ test('local API rejects foreign writes, invalid IDs and status fields', async ()
   assert.throws(() => store.encodedPath('../escape'));
   assert.equal((await fetch(base + '/api/files/not-a-hash')).status, 400);
 });
+test('revision API validates snapshots and reports historical GLB availability without changing the head', async () => {
+  const { importGlb } = await import('../server/operations.ts');
+  const old = await importGlb(triangleGlb(false, 2), 'old.glb', { id: 'test.history' });
+  const head = await importGlb(triangleGlb(false, 3), 'new.glb', { id: old.id }, old.updatedAt);
+  const headFile = store.assetPath(head.id),
+    before = await readFile(headFile),
+    snapshot = path.join(temp, 'catalog/revisions', old.id, old.revision + '.json'),
+    original = await readFile(snapshot),
+    endpoint = base + '/api/assets/' + old.id + '/revisions';
+  const response = await fetch(endpoint);
+  assert.equal(response.status, 200);
+  const revisions = await response.json();
+  assert.equal(revisions.length, 2);
+  assert.ok(
+    revisions.every((r: { available: boolean; thumbnail: boolean }) => r.available && !r.thumbnail),
+  );
+  assert.deepEqual(
+    new Set(revisions.map((r: { revision: string }) => r.revision)),
+    new Set([old.revision, head.revision]),
+  );
+  const encoded = store.encodedPath(old.revision),
+    moved = path.join(temp, 'temporarily-missing.zst');
+  await rename(encoded, moved);
+  try {
+    const missing = await (await fetch(endpoint)).json();
+    assert.equal(
+      missing.find((r: { revision: string }) => r.revision === old.revision).available,
+      false,
+    );
+  } finally {
+    await rename(moved, encoded);
+  }
+  try {
+    for (const [corrupt, status] of [
+      [{ ...old, schema: 2 }, 400],
+      [{ ...old, unknown: 'must not be silently discarded' }, 400],
+      [{ ...old, id: 'test.wrong' }, 500],
+      [{ ...old, file: { ...old.file, hash: 'f'.repeat(64) } }, 400],
+    ] as const) {
+      await writeFile(snapshot, JSON.stringify(corrupt));
+      assert.equal((await fetch(endpoint)).status, status);
+    }
+  } finally {
+    await writeFile(snapshot, original);
+  }
+  assert.equal((await fetch(endpoint)).status, 200);
+  assert.deepEqual(await readFile(headFile), before);
+});
 test('sync verifies pinned bytes and refuses tampering or overwrites', async () => {
   const lock = {
     schema: 1,

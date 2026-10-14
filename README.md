@@ -105,6 +105,7 @@ npm run -s assetctl -- sync --lock assets.lock.json --out /path/to/game/assets
 ```
 
 メモには `revision` と `text` を指定します。Webでは視点と選択中の動作・時刻も保存します。
+詳細画面の「表示する版」で旧版を閲覧できます。旧版のメモからは、そのGLB版と記録された動作設定・時刻・視点を復元します。履歴の閲覧は現在の台帳を変更せず、メタデータの編集とlock取得は現在版に戻って行います。
 `lock` はGLB・動作設定・参照モーションを固定し、`sync` は検証後にGLBと動作JSONを出力します。異なる内容の既存ファイルは上書きしません。意図した置換に限り `--force` を使います。動作JSONはAsset Hubの形式で、利用先エンジンでの実装またはGLBへの焼き付けが必要です。
 
 ## データとバックアップ
@@ -152,7 +153,7 @@ npm run validate:assets -- --json
 npm run validate:assets -- --report .cache/validation.json
 npm run -s assetctl -- gc --dry-run
 npm run thumbnails  # 別ターミナルでnpm run devを起動
-blender --background --threads 2 --python-exit-code 1 --python tests/blender_export.py
+npm run test:blender  # Blender 5.2が必要。CIでは5.2.2を固定して実行
 ```
 
 検証・容量確認は台帳と圧縮保存データを変更しません。復元キャッシュは作成されます。GLBの欠落や仕様違反、古い動作設定を報告します。仕様エラーのある制作途中のGLBも登録でき、検査結果を詳細画面で確認できます。コンテナが壊れたGLBや外部ファイル参照は拒否します。容量確認は旧版・動作設定・解決済みメモの参照も保持し、外部プロジェクトのlockは走査しません。
