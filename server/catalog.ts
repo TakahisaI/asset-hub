@@ -1,0 +1,54 @@
+import path from 'node:path';
+import {
+  scanAssets,
+  directoryEntries,
+  fileStat,
+  storeDir,
+  root,
+  getNotes,
+  recordProblem,
+} from './store.ts';
+import type { CatalogAsset } from '../src/schema.ts';
+
+export async function getCatalog() {
+  const [catalog, files, reviews] = await Promise.all([
+    scanAssets(),
+    directoryEntries(storeDir),
+    directoryEntries(path.join(root, 'catalog/reviews')),
+  ]);
+  const stored = new Set<string>();
+  const reviewFiles = new Set(reviews.map((f) => f.name));
+  const problems = [...catalog.problems];
+  for (const file of files) {
+    try {
+      if (
+        file.isFile() ||
+        (file.isSymbolicLink() && (await fileStat(path.join(storeDir, file.name))))
+      )
+        stored.add(file.name);
+    } catch (error) {
+      problems.push(recordProblem(path.join(storeDir, file.name), error));
+    }
+  }
+  const assets: CatalogAsset[] = await Promise.all(
+    catalog.assets.map(async (asset) => {
+      let notesCount = 0;
+      if (reviewFiles.has(asset.id + '.json')) {
+        try {
+          notesCount = (await getNotes(asset.id)).filter((n) => !n.resolved).length;
+        } catch (error) {
+          problems.push(
+            recordProblem(path.join(root, 'catalog/reviews', asset.id + '.json'), error),
+          );
+        }
+      }
+      return {
+        ...asset,
+        available: stored.has(asset.file.hash + '.glb'),
+        thumbnail: stored.has(asset.file.hash + '.png'),
+        notesCount,
+      };
+    }),
+  );
+  return { schema: 1, assets, problems: problems.sort((a, b) => a.file.localeCompare(b.file)) };
+}
