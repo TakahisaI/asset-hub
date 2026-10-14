@@ -231,3 +231,189 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
             linear = np.where(color <= 0.04045, color / 12.92, ((color+0.055)/1.055)**2.4)
             assert np.max(abs(linear - [0.2,0.1,0.05])) < 0.01, (obj.name,color)
     print('PASS: dense small parts retain color instead of collapsing into empty atlas pixels')
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    pbr_material = bpy.data.materials.new('procedural roughness bump')
+    pbr_material.use_nodes = True
+    pbr_nodes, pbr_links = pbr_material.node_tree.nodes, pbr_material.node_tree.links
+    pbr_shader = pbr_nodes.get('Principled BSDF')
+    pbr_shader.inputs['Base Color'].default_value = (0.4, 0.1, 0.05, 1)
+    noise = pbr_nodes.new('ShaderNodeTexNoise')
+    noise.inputs['Scale'].default_value = 8
+    pbr_links.new(noise.outputs['Fac'], pbr_shader.inputs['Roughness'])
+    pbr_links.new(noise.outputs['Fac'], pbr_shader.inputs['Metallic'])
+    bump = pbr_nodes.new('ShaderNodeBump')
+    bump.inputs['Strength'].default_value = 0.5
+    bump.inputs['Distance'].default_value = 0.02
+    pbr_links.new(noise.outputs['Fac'], bump.inputs['Height'])
+    pbr_links.new(bump.outputs['Normal'], pbr_shader.inputs['Normal'])
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 1))
+    bpy.context.object.data.materials.append(pbr_material)
+    pbr_source, pbr_target = directory / 'pbr.blend', directory / 'pbr.glb'
+    bpy.ops.wm.save_as_mainfile(filepath=str(pbr_source))
+    pbr_report = export_blend(pbr_source, pbr_target, size=512)
+    assert pbr_report['bakedRoughnessMaterials'] == ['procedural roughness bump']
+    assert pbr_report['bakedMetallicMaterials'] == ['procedural roughness bump']
+    assert pbr_report['bakedNormalMaterials'] == ['procedural roughness bump']
+    pbr_data = pbr_target.read_bytes()
+    pbr_gltf = json.loads(pbr_data[20:20 + struct.unpack_from('<I', pbr_data, 12)[0]])
+    pbr_exported = next(m for m in pbr_gltf['materials'] if m['name'] == 'procedural roughness bump')
+    assert 'metallicRoughnessTexture' in pbr_exported['pbrMetallicRoughness'], pbr_exported
+    assert 'normalTexture' in pbr_exported, pbr_exported
+    # Baked maps must carry spatial variation, not a flat fill.
+    for image_name in ['Asset Hub roughness', 'Asset Hub normal']:
+        values = np.array(bpy.data.images[image_name].pixels[:]).reshape(-1, 4)[:, :3]
+        assert float(values.std()) > 0.01, (image_name, float(values.std()))
+    print('PASS: procedural roughness, metallic and bump survive export as PBR textures')
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    expected = {}
+    for index, procedural in enumerate(['Roughness', 'Metallic', 'Both']):
+        material = bpy.data.materials.new('scalar ' + procedural)
+        material.use_nodes = True
+        nodes, links = material.node_tree.nodes, material.node_tree.links
+        shader = nodes.get('Principled BSDF')
+        ramp = nodes.new('ShaderNodeValToRGB')
+        for element in ramp.color_ramp.elements:
+            element.color = (1, 0, 0, 1) if procedural == 'Both' else (0.9, 0.9, 0.9, 1)
+        for name in ['Roughness', 'Metallic']:
+            if procedural in [name, 'Both']:
+                links.new(ramp.outputs['Color'], shader.inputs[name])
+            else:
+                # A patterned source image sampled from a small, off-center part of its UVs.
+                image = bpy.data.images.new('source ' + name, width=8, height=8)
+                image.colorspace_settings.name = 'Non-Color'
+                pixels = np.zeros((8, 8, 4), dtype=np.float32)
+                pixels[:, 4:, :3] = 0.7
+                pixels[:, :, 3] = 1
+                image.pixels[:] = pixels.ravel()
+                image.pack()
+                texture = nodes.new('ShaderNodeTexImage')
+                texture.image = image
+                links.new(texture.outputs['Color'], shader.inputs[name])
+        bpy.ops.mesh.primitive_plane_add(location=(index * 3, 0, 0))
+        obj = bpy.context.object
+        obj.name = material.name
+        obj.data.materials.append(material)
+        obj.data.materials.append(None)
+        for loop in obj.data.uv_layers.active.data:
+            loop.uv = (0.7 + loop.uv.x * 0.1, 0.4 + loop.uv.y * 0.1)
+        # The default scene uses Rec.709 luminance for RGB-to-float conversion.
+        expected[obj.name] = (0.2126, 0.2126) if procedural == 'Both' else (
+            (0.9, 0.7) if procedural == 'Roughness' else (0.7, 0.9)
+        )
+    scalar_source, scalar_target = directory / 'scalars.blend', directory / 'scalars.glb'
+    bpy.ops.wm.save_as_mainfile(filepath=str(scalar_source))
+    scalar_report = export_blend(scalar_source, scalar_target, size=512)
+    assert set(scalar_report['bakedRoughnessMaterials']) == set(expected)
+    assert set(scalar_report['bakedMetallicMaterials']) == set(expected)
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.gltf(filepath=str(scalar_target))
+    for name, values in expected.items():
+        obj = bpy.data.objects[name]
+        texture = next(n for n in obj.data.materials[0].node_tree.nodes if n.type == 'TEX_IMAGE')
+        uv_node = texture.inputs['Vector'].links[0].from_node
+        uv = obj.data.uv_layers[uv_node.uv_map]
+        pixels = np.array(texture.image.pixels[:]).reshape(512, 512, 4)
+        for face in obj.data.polygons:
+            center = sum((uv.data[i].uv for i in face.loop_indices), Vector((0, 0))) / len(face.loop_indices)
+            sample = pixels[int(center.y * 512), int(center.x * 512), 1:3]
+            assert max(abs(sample - values)) < 0.01, (name, sample, values)
+    print('PASS: packed scalar texels preserve source UVs and color conversion; empty slots export')
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    material = bpy.data.materials.new('constant scalars')
+    material.use_nodes = True
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    shader = nodes.get('Principled BSDF')
+    for name, value in [('Roughness', 0.25), ('Metallic', 0.75)]:
+        constant = nodes.new('ShaderNodeValue')
+        constant.outputs[0].default_value = value
+        links.new(constant.outputs[0], shader.inputs[name])
+    for kind in ['shape keys', 'armature']:
+        bpy.ops.mesh.primitive_cube_add()
+        obj = bpy.context.object
+        obj.data.materials.append(material)
+        if kind == 'shape keys':
+            obj.shape_key_add(name='Basis')
+            obj.shape_key_add(name='Raised').data[0].co.z += 0.5
+        else:
+            rig = bpy.data.objects.new('rig', bpy.data.armatures.new('rig'))
+            bpy.context.collection.objects.link(rig)
+            obj.modifiers.new('rig', 'ARMATURE').object = rig
+    constant_source, constant_target = directory / 'constant.blend', directory / 'constant.glb'
+    bpy.ops.wm.save_as_mainfile(filepath=str(constant_source))
+    constant_report = export_blend(constant_source, constant_target, size=512)
+    assert not constant_report['bakedRoughnessMaterials']
+    assert not constant_report['bakedMetallicMaterials']
+    data = constant_target.read_bytes()
+    gltf = json.loads(data[20:20 + struct.unpack_from('<I', data, 12)[0]])
+    pbr = gltf['materials'][0]['pbrMetallicRoughness']
+    assert pbr['roughnessFactor'] == 0.25 and pbr['metallicFactor'] == 0.75, pbr
+    assert 'metallicRoughnessTexture' not in pbr
+    assert any('targets' in p for m in gltf['meshes'] for p in m['primitives'])
+    print('PASS: constant Value scalars export directly on shape-key and armature meshes')
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    material = bpy.data.materials.new('scaled linear bump')
+    material.use_nodes = True
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    shader = nodes.get('Principled BSDF')
+    coord = nodes.new('ShaderNodeTexCoord')
+    separate = nodes.new('ShaderNodeSeparateXYZ')
+    links.new(coord.outputs['Object'], separate.inputs[0])
+    bump = nodes.new('ShaderNodeBump')
+    bump.inputs['Distance'].default_value = 0.5
+    height = nodes.new('ShaderNodeMath')
+    height.operation = 'ADD'
+    links.new(separate.outputs['X'], height.inputs[0])
+    links.new(separate.outputs['Y'], height.inputs[1])
+    links.new(height.outputs[0], bump.inputs['Height'])
+    links.new(bump.outputs['Normal'], shader.inputs['Normal'])
+    # Force the color helper path too, so normals cannot accidentally reuse its transforms.
+    links.new(separate.outputs['X'], shader.inputs['Base Color'])
+    for i, scale in enumerate([(1, 1, 1), (4, 1, 1)]):
+        bpy.ops.mesh.primitive_plane_add(location=(i * 10, 0, 0))
+        obj = bpy.context.object
+        obj.name = 'scaled ' + str(i)
+        obj.scale = scale
+        obj.data.materials.append(material)
+    bpy.context.scene.render.bake.normal_r = 'NEG_X'
+    bpy.context.scene.render.bake.normal_g = 'NEG_Y'
+    bpy.context.scene.render.bake.normal_b = 'NEG_Z'
+    normal_source = directory / 'normals.blend'
+    bpy.ops.wm.save_as_mainfile(filepath=str(normal_source))
+    export_blend(normal_source, directory / 'normals.glb', size=512)
+    actual = np.array(bpy.data.images['Asset Hub normal'].pixels[:]).reshape(512, 512, 4)
+    # Independent reference: bake each original with its transform and the exported atlas UVs.
+    atlas = {o.name: [loop.uv.copy() for loop in o.data.uv_layers['AssetHubBaseColor'].data]
+             for o in bpy.context.scene.objects if o.type == 'MESH'}
+    bpy.ops.wm.open_mainfile(filepath=str(normal_source), use_scripts=False)
+    scene = bpy.context.scene
+    scene.render.engine = 'CYCLES'
+    scene.cycles.samples = 1
+    scene.render.bake.use_clear = False
+    scene.render.bake.use_selected_to_active = False
+    scene.render.bake.normal_space = 'TANGENT'
+    scene.render.bake.normal_r, scene.render.bake.normal_g, scene.render.bake.normal_b = 'POS_X', 'POS_Y', 'POS_Z'
+    reference = bpy.data.images.new('reference', width=512, height=512, alpha=False)
+    reference.colorspace_settings.name = 'Non-Color'
+    material = bpy.data.materials['scaled linear bump']
+    texture = material.node_tree.nodes.new('ShaderNodeTexImage')
+    texture.image = reference
+    material.node_tree.nodes.active = texture
+    for name, coords in atlas.items():
+        obj = bpy.data.objects[name]
+        uv = obj.data.uv_layers.new(name='reference')
+        obj.data.uv_layers.active = uv
+        for loop, point in zip(uv.data, coords):
+            loop.uv = point
+        export_blender.select([obj])
+        bpy.ops.object.bake(type='NORMAL', uv_layer=uv.name)
+    reference_pixels = np.array(reference.pixels[:]).reshape(512, 512, 4)
+    for name, coords in atlas.items():
+        center = sum(coords, Vector((0, 0))) / len(coords)
+        for point in [center, *[(center + coord) * 0.5 for coord in coords]]:
+            x, y = int(point.x * 512), int(point.y * 512)
+            assert max(abs(actual[y, x, :3] - reference_pixels[y, x, :3])) < 0.008, (
+                name, actual[y, x, :3], reference_pixels[y, x, :3]
+            )
+    print('PASS: nonuniform object scales and saved normal-axis settings match individual +XYZ bakes')
