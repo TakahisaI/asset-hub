@@ -377,12 +377,21 @@ def export_blend(source, destination, exclude_prefixes=(), size=2048):
         bpy.ops.object.convert(target='MESH')
         objects = [o for o in bpy.context.scene.objects if o not in excluded and not o.hide_render and o.type != 'CAMERA']
     baked = bake_base_colors(objects, size)
+    # Blender cannot calculate n-gon tangents; triangulate after baking without saving the source.
+    triangulated = 0
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    for obj in objects:
+        if obj.type == 'MESH' and any(len(face.vertices) > 4 for face in obj.evaluated_get(depsgraph).data.polygons):
+            modifier = obj.modifiers.new('Asset Hub export triangles', 'TRIANGULATE')
+            modifier.min_vertices = 5
+            triangulated += 1
     select(objects)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='asset-hub-export-', dir=destination.parent) as directory:
         temporary = pathlib.Path(directory) / destination.name
         bpy.ops.export_scene.gltf(
             filepath=str(temporary), export_format='GLB', use_selection=True,
+            export_tangents=True,
             export_apply=True, export_animations=any(o.animation_data for o in objects),
             export_animation_mode='ACTIVE_ACTIONS', export_cameras=False, export_lights=True,
         )
@@ -404,6 +413,7 @@ def export_blend(source, destination, exclude_prefixes=(), size=2048):
             'selectedObjects': len(objects),
             'convertedCurves': len(curves) + instance_curves,
             'realizedInstances': len(instances),
+            'triangulatedMeshes': triangulated,
             'limitations': 'Procedural base color, roughness, metallic and normals baked at the first frame. Procedural volumes, subsurface, transmission and animated shader expressions are not baked.',
         }
         with destination.open('xb') as stream:

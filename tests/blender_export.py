@@ -246,11 +246,14 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
     bump.inputs['Distance'].default_value = 0.02
     pbr_links.new(noise.outputs['Fac'], bump.inputs['Height'])
     pbr_links.new(bump.outputs['Normal'], pbr_shader.inputs['Normal'])
-    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 1))
+    bpy.ops.mesh.primitive_cylinder_add(vertices=7, radius=1, depth=2, location=(0, 0, 1))
     bpy.context.object.data.materials.append(pbr_material)
     pbr_source, pbr_target = directory / 'pbr.blend', directory / 'pbr.glb'
     bpy.ops.wm.save_as_mainfile(filepath=str(pbr_source))
+    original_pbr = pbr_source.read_bytes()
     pbr_report = export_blend(pbr_source, pbr_target, size=512)
+    assert pbr_source.read_bytes() == original_pbr
+    assert pbr_report['triangulatedMeshes'] == 1
     assert pbr_report['bakedRoughnessMaterials'] == ['procedural roughness bump']
     assert pbr_report['bakedMetallicMaterials'] == ['procedural roughness bump']
     assert pbr_report['bakedNormalMaterials'] == ['procedural roughness bump']
@@ -259,6 +262,10 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
     pbr_exported = next(m for m in pbr_gltf['materials'] if m['name'] == 'procedural roughness bump')
     assert 'metallicRoughnessTexture' in pbr_exported['pbrMetallicRoughness'], pbr_exported
     assert 'normalTexture' in pbr_exported, pbr_exported
+    for mesh in pbr_gltf['meshes']:
+        for primitive in mesh['primitives']:
+            if 'normalTexture' in pbr_gltf['materials'][primitive['material']]:
+                assert 'TANGENT' in primitive['attributes'], primitive
     # Baked maps must carry spatial variation, not a flat fill.
     for image_name in ['Asset Hub roughness', 'Asset Hub normal']:
         values = np.array(bpy.data.images[image_name].pixels[:]).reshape(-1, 4)[:, :3]
@@ -456,6 +463,9 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
         obj = bpy.context.object
         obj.name = case
         obj.data.materials.append(material)
+        if case == 'RGB':
+            for loop in obj.data.uv_layers.active.data:
+                loop.uv = (loop.uv.y, 1 - loop.uv.x)
         if case in ['Image', 'Neutral']:
             obj.shape_key_add(name='Basis')
             obj.shape_key_add(name='Raised').data[0].co.z += 0.5
@@ -480,3 +490,27 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
         sample = pixels[int(center.y * 512), int(center.x * 512), :3]
         assert max(abs(sample - [0.5, 0.5, 1])) > 0.05, (case, sample)
     print('PASS: constant normal colors, procedural strength and object/world maps bake; direct tangent images pass through')
+
+    # A baked normal atlas must use its own UV basis, even when another UV map exists.
+    primitive = gltf['meshes'][next(n['mesh'] for n in gltf['nodes'] if n.get('name') == 'RGB')]['primitives'][0]
+    assert 'TANGENT' in primitive['attributes'], primitive
+    binary = data[28 + struct.unpack_from('<I', data, 12)[0]:]
+
+    accessor = gltf['accessors'][primitive['attributes']['TANGENT']]
+    view = gltf['bufferViews'][accessor['bufferView']]
+    assert accessor['type'] == 'VEC4' and accessor['componentType'] == 5126
+    tangents = np.ndarray(
+        (accessor['count'], 4), dtype='<f4', buffer=binary,
+        offset=view.get('byteOffset', 0) + accessor.get('byteOffset', 0),
+        strides=(view.get('byteStride', 16), 4),
+    )
+    obj = bpy.data.objects['RGB']
+    shader = obj.data.materials[0].node_tree.nodes.get('Principled BSDF')
+    normal_map = shader.inputs['Normal'].links[0].from_node
+    obj.data.calc_tangents(uvmap=normal_map.uv_map)
+    reference = obj.data.loops[0]
+    # The flat plane's reference basis is constant; convert Blender Z-up to glTF Y-up.
+    expected_tangent = np.array([reference.tangent.x, reference.tangent.z, -reference.tangent.y])
+    assert np.all(tangents[:, :3] @ expected_tangent > 0.999), (tangents, expected_tangent)
+    assert np.all(tangents[:, 3] == reference.bitangent_sign), tangents
+    print('PASS: serialized tangents follow the normal texture UV basis')
