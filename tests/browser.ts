@@ -39,6 +39,19 @@ const oldBytes = animatedGlb(true, 2, true),
   }),
   oldBehaviorHash = createHash('sha256').update(JSON.stringify(oldBehavior)).digest('hex'),
   priorBehaviorHash = createHash('sha256').update(JSON.stringify(priorBehavior)).digest('hex');
+oldAsset.qa = {
+  errors: 0,
+  warnings: 100,
+  messages: [
+    ...[0, 1].map((index) => ({
+      code: 'MESH_PRIMITIVE_GENERATED_TANGENT_SPACE',
+      message: 'Runtime-generated tangent space may be non-portable across implementations.',
+      severity: 1,
+      pointer: `/meshes/${index}/primitives/0/material`,
+    })),
+    { code: 'FUTURE_VALIDATOR_CODE', message: 'Unknown finding preserved.', severity: 2 },
+  ],
+};
 await mkdir(path.join(temp, 'catalog/behaviors'), { recursive: true });
 for (const [hash, data] of [
   [asset.behavior, behavior],
@@ -268,6 +281,13 @@ try {
     true,
   );
   await page.getByText('履歴を閲覧中 · 現在の登録内容は変更しません', { exact: true }).waitFor();
+  assert.equal(await page.locator('.qa-group').count(), 2);
+  await page.getByText(/別の表示環境で凹凸や陰影/).waitFor();
+  await page.getByText('接線データが未収録 · 警告（記録済み2件）', { exact: true }).click();
+  await page.getByText('/meshes/1/primitives/0/material', { exact: true }).waitFor();
+  await page.getByText('FUTURE_VALIDATOR_CODE · 情報（記録済み1件）', { exact: true }).click();
+  await page.getByText('Unknown finding preserved.').waitFor();
+  await page.getByText(/全件ではない場合/).waitFor();
   assert.equal(await page.getByRole('button', { name: '情報を編集', exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: '変更を保存', exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: '固定版を参照', exact: true }).count(), 0);

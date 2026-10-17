@@ -11,7 +11,6 @@ import {
   MessageSquare,
   ExternalLink,
   FolderOpen,
-  CheckCircle2,
   AlertCircle,
   RotateCcw,
   Camera,
@@ -29,6 +28,7 @@ import {
 import { PlaybackControls } from './playback-controls.tsx';
 import { fmt, mb, api, saveFile } from './ui.ts';
 import { useAssetNotes, NotesPanel } from './notes.tsx';
+import { QualityCheck } from './quality-check.tsx';
 type DetailProps = {
   asset: CatalogAsset;
   onBack: () => void;
@@ -656,40 +656,7 @@ function DetailView({
                     </div>
                   </div>
                   <h3 className="section-label">品質チェック</h3>
-                  <div
-                    className={
-                      'qa-box ' +
-                      (a.qa.errors ? 'qa-error' : a.qa.warnings ? 'qa-warning' : 'qa-pass')
-                    }
-                  >
-                    {a.qa.errors || a.qa.warnings ? (
-                      <AlertCircle size={17} />
-                    ) : (
-                      <CheckCircle2 size={17} />
-                    )}
-                    <div>
-                      <strong>glTF仕様検証</strong>
-                      <p>
-                        {a.qa.errors} エラー · {a.qa.warnings} 警告
-                      </p>
-                    </div>
-                  </div>
-                  {a.qa.messages.length > 0 && (
-                    <details className="qa-details">
-                      <summary>検証結果の詳細</summary>
-                      {a.qa.messages.map((m, i) => (
-                        <p key={i}>
-                          <b>{m.code}</b>
-                          <br />
-                          {m.message}
-                          {m.pointer && <code className="qa-pointer">{m.pointer}</code>}
-                        </p>
-                      ))}
-                    </details>
-                  )}
-                  <p className="subtle">
-                    glTFの仕様検証です。見た目や用途への適合は3D表示で確認できます。
-                  </p>
+                  <QualityCheck qa={a.qa} />
                   {!!a.source.scope && (
                     <div className="snapshot-note">
                       <strong>収録範囲</strong>
