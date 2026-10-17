@@ -1,6 +1,73 @@
 import { createHash } from 'node:crypto';
 import { inspectGlb } from '../tools/inspect.ts';
 import type { Asset } from '../src/schema.ts';
+import { SphereGeometry } from 'three';
+import type { Vfx } from '../src/vfx-schema.ts';
+
+export function vfxGlb(runtime: string, source: string, preview?: string) {
+  const original = animatedGlb();
+  const length = original.readUInt32LE(12);
+  const gltf = JSON.parse(original.subarray(20, 20 + length).toString());
+  const geometry = new SphereGeometry(1, 8, 6);
+  const chunks: Buffer[] = [original.subarray(28 + length)];
+  let offset = chunks[0].length;
+  for (const [name, values, type, componentType] of [
+    ['POSITION', geometry.attributes.position.array, 'VEC3', 5126],
+    ['NORMAL', geometry.attributes.normal.array, 'VEC3', 5126],
+    ['indices', geometry.index!.array, 'SCALAR', 5123],
+  ] as const) {
+    const bytes = Buffer.from(values.buffer, values.byteOffset, values.byteLength);
+    const view = gltf.bufferViews.length;
+    gltf.bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: bytes.length });
+    const accessor = gltf.accessors.length;
+    gltf.accessors.push({
+      bufferView: view,
+      componentType,
+      count: values.length / (type === 'VEC3' ? 3 : 1),
+      type,
+      ...(name === 'POSITION' ? { min: [-1, -1, -1], max: [1, 1, 1] } : {}),
+    });
+    const primitive = gltf.meshes[0].primitives[0];
+    if (name === 'indices') primitive.indices = accessor;
+    else primitive.attributes[name] = accessor;
+    chunks.push(bytes);
+    offset += bytes.length;
+  }
+  gltf.meshes[0].primitives[0].material = 0;
+  gltf.materials = [{ name: 'smoke' }];
+  const vfx: Vfx = {
+    schema: 1,
+    clip: 0,
+    posterTime: 1,
+    runtime,
+    source: { name: 'source.blend', hash: source },
+    ...(preview ? { preview: { name: 'preview.mp4', hash: preview } } : {}),
+    limitations: 'テスト用の近似ボリューム',
+    times: [0, 1, 2],
+    smoke: [
+      { material: 0, color: [0.3, 0.3, 0.3], noiseScale: 5, threshold: 0.35, density: [0, 4, 0] },
+    ],
+    emission: [],
+  };
+  gltf.extras = { assetHubVfx: vfx };
+  gltf.buffers[0].byteLength = offset;
+  const json = Buffer.from(JSON.stringify(gltf));
+  const padded = Buffer.alloc(Math.ceil(json.length / 4) * 4, 32);
+  json.copy(padded);
+  const bin = Buffer.concat(chunks);
+  const bytes = Buffer.alloc(28 + padded.length + bin.length);
+  bytes.write('glTF');
+  bytes.writeUInt32LE(2, 4);
+  bytes.writeUInt32LE(bytes.length, 8);
+  bytes.writeUInt32LE(padded.length, 12);
+  bytes.writeUInt32LE(0x4e4f534a, 16);
+  padded.copy(bytes, 20);
+  bytes.writeUInt32LE(bin.length, 20 + padded.length);
+  bytes.writeUInt32LE(0x004e4942, 24 + padded.length);
+  bin.copy(bytes, 28 + padded.length);
+  geometry.dispose();
+  return bytes;
+}
 
 export function triangleGlb(external = false, scale = 1) {
   const gltf = {

@@ -16,13 +16,32 @@ import {
 /** A read-only inventory, not an instruction to delete: other processes can add references. */
 export async function inspectStorage() {
   const { assets, problems } = await scanAssets();
-  const current = new Set(assets.map((a) => a.file.hash));
+  const current = new Set(
+    assets.flatMap((a) => [
+      a.file.hash,
+      ...(a.vfx
+        ? [a.vfx.runtime, a.vfx.source.hash, ...(a.vfx.preview ? [a.vfx.preview.hash] : [])]
+        : []),
+    ]),
+  );
+  const vfxFiles = new Set<string>();
   const references = new Map<string, Set<string>>();
   function retain(hash: string, reference: string) {
     if (!references.has(hash)) references.set(hash, new Set());
     references.get(hash)!.add(reference);
   }
-  for (const asset of assets) retain(asset.file.hash, `asset:${asset.id}`);
+  function retainVfx(asset: import('../src/schema.ts').Asset, reference: string) {
+    if (!asset.vfx) return;
+    for (const hash of [asset.vfx.runtime, asset.vfx.source.hash, asset.vfx.preview?.hash])
+      if (hash) {
+        retain(hash, reference);
+        vfxFiles.add(hash);
+      }
+  }
+  for (const asset of assets) {
+    retain(asset.file.hash, `asset:${asset.id}`);
+    retainVfx(asset, `vfx:${asset.id}`);
+  }
   const revisionsDir = path.join(root, 'catalog/revisions');
   for (const entry of await directoryEntries(revisionsDir)) {
     const dir = path.join(revisionsDir, entry.name);
@@ -41,6 +60,7 @@ export async function inspectStorage() {
           )
             throw new Error('固定版のIDまたはハッシュが一致しません');
           retain(asset.file.hash, `revision:${id}`);
+          retainVfx(asset, `vfx-revision:${id}`);
         } catch (error) {
           problems.push(recordProblem(filename, error));
         }
@@ -91,7 +111,7 @@ export async function inspectStorage() {
         files.push({
           file: 'blobs/' + record.hash + '.zst',
           hash: record.hash,
-          kind: 'glb',
+          kind: vfxFiles.has(record.hash) ? 'vfx' : 'glb',
           bytes: info.size,
           logicalBytes: record.bytes,
         });
@@ -124,7 +144,9 @@ export async function inspectStorage() {
     }
     missing.push({ hash, references: [...refs].sort() });
   }
-  const blobs = files.filter((f) => f.kind === 'glb');
+  const blobs = files.filter((f) => f.kind !== 'png');
+  const glbs = blobs.filter((f) => f.kind === 'glb');
+  const media = blobs.filter((f) => f.kind === 'vfx');
   const sum = (items: typeof files) => items.reduce((total, f) => total + f.bytes, 0);
   // Fail closed: malformed records may contain references we could not read.
   const candidates = problems.length
@@ -149,8 +171,10 @@ export async function inspectStorage() {
     complete: problems.length === 0,
     scannedAt: new Date().toISOString(),
     summary: {
-      glbFiles: blobs.length,
-      glbBytes: sum(blobs),
+      glbFiles: glbs.length,
+      glbBytes: sum(glbs),
+      vfxFiles: media.length,
+      vfxBytes: sum(media),
       logicalBytes: blobs.reduce((sum, f) => sum + f.logicalBytes, 0),
       currentBytes: sum(blobs.filter((f) => current.has(f.hash))),
       retainedHistoryBytes: sum(

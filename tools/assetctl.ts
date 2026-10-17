@@ -69,6 +69,7 @@ export async function syncLock(raw: unknown, out: string, force = false) {
   const staging = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-sync-'));
   try {
     const plan: { staged: string; target: string; hash: string; cache: boolean }[] = [];
+    const runtimeFiles = new Map<string, string>();
     for (const item of lock.assets)
       if (item.behavior) {
         const behavior = await getBehavior(item.behavior);
@@ -112,6 +113,22 @@ export async function syncLock(raw: unknown, out: string, force = false) {
         revision.file.hash !== item.sha256
       )
         throw new Error('登録済みの固定版と一致しません');
+      if (revision.vfx) {
+        const hash = revision.vfx.runtime;
+        const target = path.join(path.resolve(out), 'asset-hub-vfx.' + hash.slice(0, 12) + '.js');
+        runtimeFiles.set(item.id + ':' + item.revision, path.basename(target));
+        if (!plan.some((p) => p.target === target)) {
+          const staged = path.join(staging, hash + '.js');
+          await withBlob(hash, (file) => copyFile(file, staged));
+          if (await exists(target)) {
+            if ((await fileDigest(target)) !== hash) {
+              if (!force)
+                throw new Error(`異なる内容のファイルがあります: ${target} (--force で上書き)`);
+              plan.push({ staged, target, hash, cache: false });
+            }
+          } else plan.push({ staged, target, hash, cache: false });
+        }
+      }
       const staged = path.join(staging, item.sha256 + '.glb');
       const cache = !(await exists(manifestPath(item.sha256)));
       if (!(await exists(staged))) {
@@ -169,6 +186,9 @@ export async function syncLock(raw: unknown, out: string, force = false) {
       revision: item.revision,
       file: item.id + '.' + item.revision.slice(0, 12) + '.glb',
       ...(item.behavior ? { behaviorFile: item.behavior + '.behavior.json' } : {}),
+      ...(runtimeFiles.has(item.id + ':' + item.revision)
+        ? { runtimeFile: runtimeFiles.get(item.id + ':' + item.revision) }
+        : {}),
     }));
   } finally {
     await rm(staging, { recursive: true, force: true });

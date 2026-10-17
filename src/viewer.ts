@@ -5,6 +5,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { Playback, bindMotion } from './playback.ts';
 import type { Behavior, Preset, ReviewNote } from './schema.ts';
+import { applyVfx } from './vfx-runtime.js';
 function modelLoader() {
   return new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).register((parser) => ({
     name: 'AssetHubNodeIndices',
@@ -114,6 +115,13 @@ export class AssetViewer {
       this.disposeObject(gltf.scene);
       return;
     }
+    let vfx;
+    try {
+      vfx = applyVfx(gltf);
+    } catch (error) {
+      this.disposeObject(gltf.scene);
+      throw error;
+    }
     this.model = gltf.scene;
     this.scene.add(this.model);
     this.model.updateMatrixWorld(true);
@@ -163,6 +171,13 @@ export class AssetViewer {
     this.playback = new Playback(this.model, nodeMap(gltf), this.clips);
     this.animation = this.playback.mixer;
     this.fit();
+    if (vfx) {
+      this.lighting('dark');
+      this.grid.visible = false;
+      this.playback.select(vfx.clip);
+      this.playback.seek(vfx.posterTime);
+      this.fitMotion();
+    }
   }
   async selectPreset(preset?: Preset, clip?: number) {
     const generation = this.generation,
@@ -272,7 +287,7 @@ export class AssetViewer {
     this.rim.intensity = mode === 'night' ? 0.05 : 1.3;
     this.fill.intensity = mode === 'night' ? 0.65 : mode === 'flat' ? 3.7 : 2.5;
     this.light.intensity = mode === 'night' ? 0.7 : mode === 'flat' ? 1 : 3.2;
-    this.renderer.setClearColor(mode === 'night' ? 0x202b35 : 0xeae9e2);
+    this.renderer.setClearColor(mode === 'night' || mode === 'dark' ? 0x202b35 : 0xeae9e2);
   }
   cameraState(): CameraState {
     return { position: this.camera.position.toArray(), target: this.controls.target.toArray() };

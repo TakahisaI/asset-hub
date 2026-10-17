@@ -793,6 +793,7 @@ h1 > span {
 }
 .detail-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .revision-browser {

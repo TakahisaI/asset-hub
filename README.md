@@ -63,6 +63,38 @@ Principled BSDFのベースカラー・粗さ・金属度・法線（凹凸）�
 
 ## 動作とモーション
 
+### Three.js向けVFX
+
+既存GLBの移動・回転・拡縮に、Blenderの煙密度と発光強度の時間変化を追加できます。原本を`catalog/sources/`に保管し、対応するGLBから新しい版を作ります。原本と入力GLBは変更しません。
+
+```sh
+blender --background --disable-autoexec --python-exit-code 1 \
+  --python tools/export_blender_vfx.py -- \
+  catalog/sources/example/effect.blend original.glb effect.glb \
+  --runtime src/vfx-runtime.js --preview catalog/sources/example/preview.mp4
+```
+
+元のGLBとBlenderは同じ開始フレーム・終了フレームを持つ一つのシーンクリップを使います。現在はPrincipled VolumeにNoise TextureとMultiplyで密度を与える球状の煙と、Principled BSDFのリンクされていない発光強度をフレームごとに収録します。煙には任意でクランプしたSubtractの閾値を使えます。煙はThree.jsの近似ボリュームで、Blenderのノイズ・照明・影・ブルームとは一致しません。対応範囲は詳細画面にも表示します。
+
+GLBをCLIの`add`/`replace`/`import`で登録すると、ローダー・原本・参考動画もハッシュで圧縮保存します。原本の`source`メタデータは保管したblendへのパスを指定してください。画面では3Dの再生・停止・シーク、参考動画の視聴、原本とローダーの取得ができます。`VFX`カテゴリで絞り込めます。固定版の`lock`/`sync`では、GLBと対応するローダーを一緒に出力します。GLB単体の一般的なビューアには煙と材質アニメーションは移植されません。
+
+持ち出し先は同じThree.jsを使い、取得したローダーをGLTFLoaderの直後に適用します。ローダーに追加の実行時依存はありません。Three.js r186 / WebGL2で確認しています。
+
+```js
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { applyVfx } from './asset-hub-vfx.<hash>.js';
+
+const gltf = await new GLTFLoader().loadAsync('./effect.glb');
+applyVfx(gltf);
+scene.add(gltf.scene);
+const mixer = new THREE.AnimationMixer(gltf.scene);
+mixer.clipAction(gltf.animations[0]).play();
+// 描画ループで mixer.update(deltaSeconds) を呼びます。
+```
+
+VFXデータはGLBの固定版に含まれ、ローダー・原本・動画も旧版から参照し続けます。通常の`catalog/`と`.store/`のバックアップに含まれます。
+
 GLBの埋め込みクリップを選択して再生・一時停止・時刻指定・速度変更できます。動作設定はモデルの固定版に紐付けます。
 
 ```sh

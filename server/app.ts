@@ -165,6 +165,33 @@ export function createApp() {
         ),
     );
   });
+  app.get('/api/assets/:id/revisions/:hash/vfx/:kind', async (req, res) => {
+    const asset = await getRevision(req.params.id, req.params.hash);
+    const kind = z.enum(['source', 'preview', 'runtime']).parse(req.params.kind);
+    const file =
+      kind === 'runtime'
+        ? asset.vfx && {
+            hash: asset.vfx.runtime,
+            name: 'asset-hub-vfx.' + asset.vfx.runtime.slice(0, 12) + '.js',
+          }
+        : asset.vfx?.[kind];
+    if (!file) return res.status(404).json({ error: 'この版のVFX資料がありません' });
+    res.set('Cache-Control', 'public,max-age=31536000,immutable');
+    if (kind === 'preview') res.type('video/mp4');
+    else
+      res
+        .attachment(file.name)
+        .type(kind === 'runtime' ? 'application/javascript' : 'application/octet-stream');
+    await withBlob(
+      file.hash,
+      (location) =>
+        new Promise<void>((resolve, reject) =>
+          res.sendFile(location, { dotfiles: 'allow' }, (error) =>
+            error ? reject(error) : resolve(),
+          ),
+        ),
+    );
+  });
   app.get('/api/thumbnails/:hash', async (req, res) => {
     const hash = hashSchema.parse(req.params.hash);
     res.set('Cache-Control', 'no-cache');

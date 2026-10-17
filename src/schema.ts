@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { vfxInfoSchema } from './vfx-schema.ts';
 export const categories = {
   buildings: '建築',
   props: '小道具',
@@ -7,6 +8,7 @@ export const categories = {
   animals: '動物',
   characters: '人物',
   motions: 'モーション',
+  effects: 'VFX',
   other: 'その他',
 };
 export const idSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,159}$/);
@@ -119,6 +121,7 @@ const assetRecordSchema = z
       'animals',
       'characters',
       'motions',
+      'effects',
       'other',
     ]),
     kind: z.enum(['model', 'motion']).optional(),
@@ -176,6 +179,7 @@ const assetRecordSchema = z
       })
       .strict(),
     importWarnings: z.array(z.string()).optional(),
+    vfx: vfxInfoSchema.optional(),
     importedAt: z.iso.datetime(),
     updatedAt: z.iso.datetime(),
   })

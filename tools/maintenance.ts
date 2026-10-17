@@ -113,7 +113,7 @@ export async function migrateStorage(backup: string) {
     for (const asset of assets) {
       const fixed = await getRevision(asset.id, asset.revision);
       const updated = structuredClone(asset);
-      for (const key of ['source', 'file', 'metrics', 'qa', 'importWarnings'] as const)
+      for (const key of ['source', 'file', 'metrics', 'qa', 'importWarnings', 'vfx'] as const)
         Object.assign(updated, { [key]: fixed[key] });
       if (
         updated.behavior &&

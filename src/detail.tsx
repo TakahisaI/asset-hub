@@ -150,7 +150,7 @@ function DetailView({
     [loadError, setLoadError] = useState(''),
     [tab, setTab] = useState(initialNote ? 'notes' : 'info'),
     [mode, setMode] = useState('pbr'),
-    [lighting, setLighting] = useState('studio'),
+    [lighting, setLighting] = useState(a.vfx ? 'dark' : 'studio'),
     [dimensions, setDimensions] = useState(''),
     [busy, setBusy] = useState(false),
     [edit, setEdit] = useState(false),
@@ -176,7 +176,7 @@ function DetailView({
     setFormError('');
     setDimensions('');
     setMode('pbr');
-    setLighting('studio');
+    setLighting(a.vfx ? 'dark' : 'studio');
     if (!loadRequested) return;
     let v: AssetViewer | undefined,
       cancelled = false;
@@ -319,9 +319,36 @@ function DetailView({
             <Download size={16} />
             GLBを取得
           </a>
+          {a.vfx && (
+            <>
+              <a
+                className="secondary"
+                href={`/api/assets/${a.id}/revisions/${a.revision}/vfx/runtime`}
+                download
+              >
+                Three.js用ローダーを取得
+              </a>
+              <a
+                className="secondary"
+                href={`/api/assets/${a.id}/revisions/${a.revision}/vfx/source`}
+                download
+              >
+                Blender原本を取得
+              </a>
+            </>
+          )}
         </div>
       </div>
       {history}
+      {a.vfx && (
+        <p className="snapshot-note">
+          <strong>Three.js VFX</strong>
+          <br />
+          {a.vfx.limitations}
+          <br />
+          持ち出し先でもThree.js用ローダーが必要です。「固定版を参照」とCLIのsyncではGLBとローダーを一緒に取得できます。
+        </p>
+      )}
       {a.behavior && (
         <p className="subtle">
           {readOnly
@@ -439,7 +466,7 @@ function DetailView({
               <input
                 type="checkbox"
                 disabled={!ready}
-                defaultChecked
+                defaultChecked={!a.vfx}
                 onChange={(e) => {
                   if (viewer.current?.grid) viewer.current.grid.visible = e.target.checked;
                 }}
@@ -476,6 +503,7 @@ function DetailView({
               }}
             >
               <option value="studio">スタジオ照明</option>
+              <option value="dark">暗い背景</option>
               <option value="flat">曇天</option>
               <option value="night">夜間</option>
             </select>
@@ -539,7 +567,7 @@ function DetailView({
                   ) : (
                     <>
                       <Box size={11} />
-                      3Dモデル
+                      {a.vfx ? 'Three.js VFX' : '3Dモデル'}
                     </>
                   )}
                 </span>
@@ -657,6 +685,19 @@ function DetailView({
                   </div>
                   <h3 className="section-label">品質チェック</h3>
                   <QualityCheck qa={a.qa} />
+                  {a.vfx?.preview && (
+                    <details className="qa-details">
+                      <summary>Blenderの参考動画</summary>
+                      <video
+                        aria-label="Blenderの参考動画"
+                        controls
+                        preload="none"
+                        src={`/api/assets/${a.id}/revisions/${a.revision}/vfx/preview`}
+                        style={{ width: '100%' }}
+                      />
+                      <p>制作元での見え方です。上のThree.js表示とは照明や煙の表現が異なります。</p>
+                    </details>
+                  )}
                   {!!a.source.scope && (
                     <div className="snapshot-note">
                       <strong>収録範囲</strong>
