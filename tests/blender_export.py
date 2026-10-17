@@ -14,6 +14,7 @@ from mathutils import Vector
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from export_blender import export_blend
 import export_blender
+from export_blender_vfx import record_vfx
 
 
 with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
@@ -514,3 +515,65 @@ with tempfile.TemporaryDirectory(prefix='asset-hub-color-test-') as directory:
     assert np.all(tangents[:, :3] @ expected_tangent > 0.999), (tangents, expected_tangent)
     assert np.all(tangents[:, 3] == reference.bitangent_sign), tangents
     print('PASS: serialized tangents follow the normal texture UV basis')
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.frame_end = 3
+    scene.render.fps = 24
+    glow = bpy.data.materials.new('animated charge')
+    glow.use_nodes = True
+    shader = glow.node_tree.nodes.get('Principled BSDF')
+    shader.inputs['Emission Color'].default_value = (0.02, 0.5, 1, 1)
+    for frame, strength in [(1, 0.3), (2, 8), (3, 0.3)]:
+        shader.inputs['Emission Strength'].default_value = strength
+        shader.inputs['Emission Strength'].keyframe_insert('default_value', frame=frame)
+    bpy.ops.mesh.primitive_cube_add()
+    obj = bpy.context.object
+    obj.data.materials.append(glow)
+    for frame, x in [(1, 0), (3, 1)]:
+        obj.location.x = x
+        obj.keyframe_insert('location', frame=frame)
+    smoke = bpy.data.materials.new('recorded smoke')
+    smoke.use_nodes = True
+    nodes, links = smoke.node_tree.nodes, smoke.node_tree.links
+    nodes.clear()
+    output = nodes.new('ShaderNodeOutputMaterial')
+    volume = nodes.new('ShaderNodeVolumePrincipled')
+    noise = nodes.new('ShaderNodeTexNoise')
+    multiply = nodes.new('ShaderNodeMath')
+    multiply.operation = 'MULTIPLY'
+    links.new(noise.outputs['Fac'], multiply.inputs[0])
+    links.new(multiply.outputs[0], volume.inputs['Density'])
+    links.new(volume.outputs[0], output.inputs['Volume'])
+    for frame, density in [(1, 0), (2, 4), (3, 0)]:
+        multiply.inputs[1].default_value = density
+        multiply.inputs[1].keyframe_insert('default_value', frame=frame)
+    bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1)
+    bpy.context.object.data.materials.append(smoke)
+    scene.frame_set(2)
+    source, base, target = directory / 'vfx-source.blend', directory / 'vfx-base.glb', directory / 'vfx.glb'
+    bpy.ops.wm.save_as_mainfile(filepath=str(source))
+    original = source.read_bytes()
+    export_blend(source, base, size=512)
+    base_bytes = base.read_bytes()
+    runtime = Path(__file__).resolve().parents[1] / 'src/vfx-runtime.js'
+    report = record_vfx(source, base, target, runtime)
+    assert source.read_bytes() == original and base.read_bytes() == base_bytes
+    result = target.read_bytes()
+    original_length = struct.unpack_from('<I', base_bytes, 12)[0]
+    result_length = struct.unpack_from('<I', result, 12)[0]
+    assert result[20 + result_length:] == base_bytes[20 + original_length:]
+    original_json = json.loads(base_bytes[20:20 + original_length])
+    result_json = json.loads(result[20:20 + result_length])
+    recorded = result_json['extras'].pop('assetHubVfx')
+    if not result_json['extras']:
+        del result_json['extras']
+    assert result_json == original_json
+    assert recorded['smoke'][0]['density'] == [0, 4, 0]
+    assert max(abs(a-b) for a,b in zip(recorded['emission'][0]['strength'], [0.3, 8, 0.3])) < 1e-5
+    assert abs(recorded['posterTime'] - 2 / 24) < 1e-6
+    assert abs(recorded['times'][1] - 2 / 24) < 1e-6
+    assert recorded['runtime'] == hashlib.sha256(runtime.read_bytes()).hexdigest()
+    assert report['sourceHash'] == hashlib.sha256(original).hexdigest()
+    assert report['glbHash'] == hashlib.sha256(result).hexdigest()
+    print('PASS: VFX records density/emission timing and provenance without changing original files or GLB geometry')

@@ -13,6 +13,7 @@ import {
   type Asset,
 } from '../src/schema.ts';
 import { inspectGlb } from '../tools/inspect.ts';
+import { preserveVfx } from './vfx.ts';
 import { describeGlb, motionMap } from '../tools/glb.ts';
 import { putBlob, readBlob, assertStorageReady } from './blobs.ts';
 import {
@@ -92,6 +93,22 @@ export async function importGlb(
         status: 409,
       });
     if (expected !== undefined && previous?.updatedAt !== expected) throw conflict();
+    const source =
+      input.source ??
+      (inspection.vfx && previous && previous.vfx?.source.hash === inspection.vfx.source.hash
+        ? previous.source
+        : {
+            repository: 'local' as const,
+            commit: '',
+            path: filename,
+            kind: 'other' as const,
+            upstreamId: input.id,
+            scope: 'GLBに含まれるモデル・アニメーション・照明',
+            integrationNote: '制作ソースは別途保管してください。',
+          });
+    if (inspection.vfx) {
+      await preserveVfx(inspection.vfx, source);
+    }
     const hash = await putBlob(bytes, previous?.revision),
       now = new Date().toISOString();
     return registerAsset(
@@ -105,15 +122,7 @@ export async function importGlb(
         tags: input.tags ?? [],
         collections: input.collections ?? [],
         license: input.license ?? '未確認',
-        source: input.source ?? {
-          repository: 'local',
-          commit: '',
-          path: filename,
-          kind: 'other',
-          upstreamId: input.id,
-          scope: 'GLBに含まれるモデル・アニメーション・照明',
-          integrationNote: '制作ソースは別途保管してください。',
-        },
+        source,
         revision: hash,
         file: {
           hash,

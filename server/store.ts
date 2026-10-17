@@ -171,7 +171,7 @@ export async function registerAsset(
       if (fixed.id !== asset.id || fixed.revision !== asset.revision)
         throw new Error('固定版のIDまたはハッシュが一致しません');
       // Discovery/inspection changes are import events; fixed revision fields stay immutable.
-      for (const key of ['source', 'file', 'metrics', 'qa', 'importWarnings'] as const)
+      for (const key of ['source', 'file', 'metrics', 'qa', 'importWarnings', 'vfx'] as const)
         Object.assign(asset, { [key]: fixed[key] });
     } else await atomicJson(snapshot, asset);
     await atomicJson(assetPath(asset.id), asset);

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { behaviorSchema } from '../src/schema.ts';
 import { browser } from '../tools/browser.ts';
-import { fixtureAsset, triangleGlb, animatedGlb } from './fixtures.ts';
+import { fixtureAsset, triangleGlb, animatedGlb, vfxGlb } from './fixtures.ts';
 const root = process.cwd(),
   temp = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-browser-'));
 const bytes = animatedGlb(true, 0, true);
@@ -453,8 +453,69 @@ try {
   assert.ok(notes[0].camera);
   assert.equal(notes[0].playback.clip, 0);
   assert.equal(notes[0].playback.time, 0.75);
+  const runtime = await readFile(path.join(root, 'src/vfx-runtime.js'));
+  const source = Buffer.from('BLENDER browser fixture');
+  const video = await readFile(path.join(root, 'tests/fixtures/vfx-preview.mp4'));
+  const hash = (data: Buffer) => createHash('sha256').update(data).digest('hex');
+  const sourceFolder = path.join(temp, 'catalog/sources/vfx');
+  await mkdir(sourceFolder, { recursive: true });
+  await writeFile(path.join(sourceFolder, 'source.blend'), source);
+  await writeFile(path.join(sourceFolder, 'preview.mp4'), video);
+  const { importGlb } = await import('../server/operations.ts');
+  const vfx = await importGlb(vfxGlb(hash(runtime), hash(source), hash(video)), 'vfx.glb', {
+    id: 'test.vfx',
+    name: '煙のVFX',
+    category: 'effects',
+    source: {
+      repository: 'local',
+      commit: '',
+      path: path.join(sourceFolder, 'source.blend'),
+      kind: 'blender',
+      upstreamId: 'vfx',
+      scope: 'test',
+      integrationNote: '',
+    },
+  });
+  const shaderErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error' && /THREE|WebGL|GL_/.test(message.text()))
+      shaderErrors.push(message.text());
+  });
+  await page.goto(base + '?asset=' + vfx.id);
+  await page.locator('.viewer-state').waitFor({ state: 'hidden' });
+  assert.equal(await page.getByLabel('動作', { exact: true }).inputValue(), 'clip:0');
+  assert.equal(await page.getByLabel('照明', { exact: true }).inputValue(), 'dark');
+  assert.equal(await page.getByLabel('グリッド', { exact: true }).isChecked(), false);
+  await page.getByLabel('再生位置', { exact: true }).fill('0');
+  const noSmoke = await page.locator('.viewport canvas').screenshot();
+  await page.getByLabel('再生位置', { exact: true }).fill('1');
+  assert.notDeepEqual(await page.locator('.viewport canvas').screenshot(), noSmoke);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  for (const [label, expected] of [
+    ['Blender原本を取得', source],
+    ['Three.js用ローダーを取得', runtime],
+  ] as const) {
+    const event = page.waitForEvent('download');
+    await page.getByRole('link', { name: label, exact: true }).click();
+    assert.deepEqual(await readFile((await (await event).path())!), expected);
+  }
+  await page.getByText('Blenderの参考動画', { exact: true }).click();
+  const duration = await page.getByLabel('Blenderの参考動画', { exact: true }).evaluate(
+    (element) =>
+      new Promise<number>((resolve, reject) => {
+        const video = element as HTMLVideoElement;
+        video.addEventListener('loadedmetadata', () => resolve(video.duration), { once: true });
+        video.addEventListener('error', () => reject(new Error('VFX参考動画の読み込みに失敗')), {
+          once: true,
+        });
+        video.load();
+      }),
+  );
+  assert.ok(duration > 0);
+  assert.deepEqual(shaderErrors, []);
+  assert.deepEqual(errors, []);
   console.log(
-    'Browser PASS: 3D load, one-click modes, metadata/collections persistence, notes/camera/resolve, read-only revision history, revision-switch drafts/focus, revision behavior isolation, current-head note labels, old GLB/behavior/camera restoration, lock/GLB download, GLB upload, modal focus, search, mobile grid/list/detail, deferred heavy model, partial catalog failure.',
+    'Browser PASS: 3D load, modes, metadata/collections, notes/camera, revision history/drafts/behavior isolation, pinned downloads/upload, modal focus, search, mobile layout, deferred model, partial catalog failure, VFX volume shader/seek, source/runtime downloads and reference video.',
   );
 } finally {
   await b.close();
