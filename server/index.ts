@@ -20,6 +20,14 @@ if (process.env.NODE_ENV === 'production') {
 }
 app.use(apiErrors);
 const port = Number(process.env.PORT ?? 4310);
-const server = app.listen(port, '127.0.0.1', () =>
-  console.log(`Asset Hub: http://127.0.0.1:${(server.address() as { port: number }).port}`),
-);
+const server = app.listen(port, '127.0.0.1', (error?: Error) => {
+  if (error) {
+    console.error(
+      (error as NodeJS.ErrnoException).code === 'EADDRINUSE'
+        ? `127.0.0.1:${port}は使用中です。起動済みのAsset Hubを開くか、PORTで別のポートを指定してください。`
+        : `Asset Hubを起動できません: ${error.message}`,
+    );
+    process.exit(1);
+  }
+  console.log(`Asset Hub: http://127.0.0.1:${(server.address() as { port: number }).port}`);
+});
