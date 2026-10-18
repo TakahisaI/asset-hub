@@ -71,6 +71,11 @@ export async function testBakeRegistration(base: string, page: Page, temp: strin
     assert.equal(stderr, '');
   }
   assert((await readdir(path.join(viteCache, 'deps'))).includes('_metadata.json'));
+  const concurrent = await Promise.all([cli(...cliArgs), cli(...cliArgs)]);
+  for (const { stdout, stderr } of concurrent) {
+    assert.equal(JSON.parse(stdout).registered, false);
+    assert.equal(stderr, '');
+  }
   const dry = await bakeAsset(source.id, 'test.baked', input);
   assert.equal(dry.registered, false);
   await assert.rejects(() => getAsset('test.baked'), /ENOENT/);

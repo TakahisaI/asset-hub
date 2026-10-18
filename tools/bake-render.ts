@@ -17,6 +17,10 @@ export async function compareBake(
   motions: Record<string, Uint8Array> = {},
 ) {
   const app = express();
+  // Serve the blank host without Vite injecting its development WebSocket client.
+  app.get('/tools/blank.html', (_req, res) =>
+    res.sendFile(fileURLToPath(new URL('./blank.html', import.meta.url)), { dotfiles: 'allow' }),
+  );
   app.get('/__bake/source.glb', (_req, res) =>
     res.type('model/gltf-binary').send(Buffer.from(source)),
   );
@@ -32,7 +36,7 @@ export async function compareBake(
     root: fileURLToPath(new URL('..', import.meta.url)),
     cacheDir: path.join(root, '.cache/bake-vite'),
     logLevel: 'silent',
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, hmr: false, ws: false },
     appType: 'spa',
   });
   app.use(vite.middlewares);
