@@ -67,6 +67,13 @@ test('saved comparison settings validate the entire document and reject invalid 
     profiles: [null, null],
   };
   assert.deepEqual(readComparisonSettings(JSON.stringify(settings)), settings);
+  for (const sign of [1, -1]) {
+    const pole = {
+      ...settings,
+      camera: { ...settings.camera, position: [0, sign * Math.cos(1e-6), Math.sin(1e-6)] },
+    };
+    assert.deepEqual(readComparisonSettings(JSON.stringify(pole)), pole);
+  }
   assert.throws(() => readComparisonSettings('{'), /JSON/);
   assert.throws(() => readComparisonSettings(JSON.stringify({ ...settings, schema: 2 })), /schema/);
   for (const camera of [

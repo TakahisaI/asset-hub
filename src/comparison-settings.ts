@@ -28,14 +28,20 @@ export const comparisonSettingsSchema = z
         const direction = c.target.map((n, i) => n - c.position[i]);
         const distance = Math.hypot(...direction),
           upLength = Math.hypot(...c.up);
-        const dot = direction.reduce((sum, n, i) => sum + (n / distance) * (c.up[i] / upLength), 0);
+        const d = direction.map((n) => n / distance),
+          u = c.up.map((n) => n / upLength);
+        const cross = Math.hypot(
+          d[1] * u[2] - d[2] * u[1],
+          d[2] * u[0] - d[0] * u[2],
+          d[0] * u[1] - d[1] * u[0],
+        );
         if (
           !Number.isFinite(distance) ||
           distance === 0 ||
           !Number.isFinite(upLength) ||
           upLength === 0 ||
-          !Number.isFinite(dot) ||
-          Math.abs(dot) > 1 - 1e-10 ||
+          !Number.isFinite(cross) ||
+          cross === 0 ||
           c.far <= c.near
         )
           ctx.addIssue({

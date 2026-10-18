@@ -1307,6 +1307,14 @@ summary {
   margin-top: 19px;
   margin-bottom: 7px;
 }
+.help-modal textarea {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  resize: vertical;
+}
 .help-modal code {
   display: block;
   background: #ecf1e4;
