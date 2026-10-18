@@ -129,15 +129,29 @@ export async function testBakeRegistration(base: string, page: Page, temp: strin
   );
   // The dependency path must carry the same provenance as an explicitly selected derived asset.
   const animated = animatedGlb(),
-    motionG = readGlb(animated),
-    rigidG = readGlb(bytes);
-  motionG.nodes = rigidG.nodes;
-  motionG.animations!.forEach((clip) =>
-    clip.channels.forEach((channel) => {
-      channel.target.node = 0;
-    }),
+    motionG = readGlb(bytes),
+    clips = readGlb(animated),
+    bin = readGlbBinary(bytes)!;
+  const viewOffset = motionG.bufferViews!.length,
+    accessorOffset = motionG.accessors!.length;
+  motionG.bufferViews!.push(
+    ...clips.bufferViews!.map((v) => ({ ...v, byteOffset: (v.byteOffset ?? 0) + bin.length })),
   );
-  const motionBytes = writeGlb(motionG, readGlbBinary(animated)!);
+  motionG.accessors!.push(
+    ...clips.accessors!.map((a) => ({ ...a, bufferView: a.bufferView! + viewOffset })),
+  );
+  motionG.animations = clips.animations!.map((clip) => ({
+    ...clip,
+    samplers: clip.samplers.map((s) => ({
+      ...s,
+      input: s.input + accessorOffset,
+      output: s.output! + accessorOffset,
+    })),
+    channels: clip.channels.map((c) => ({ ...c, target: { ...c.target, node: 0 } })),
+  }));
+  const motionBin = Buffer.concat([bin, readGlbBinary(animated)!]);
+  motionG.buffers![0].byteLength = motionBin.length;
+  const motionBytes = writeGlb(motionG, motionBin);
   const motionSource = await importGlb(motionBytes, 'motion.glb', {
     id: 'test.rigid-motion',
     name: '固定部品モーション',

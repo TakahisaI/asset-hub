@@ -13,7 +13,7 @@ export const bakeInputSchema = z
       .object({
         positionToleranceMeters: tolerance.default('0.000001'),
         normalUvTangentTolerance: tolerance.default('0.000001'),
-        imageMaxChannelError: z.number().int().min(0).max(2).default(2),
+        imageMaxChannelError: z.number().int().min(0).max(255).default(2),
         imageMaxChangedPixelRatio: tolerance.default('0.001'),
       })
       .strict()
@@ -62,7 +62,7 @@ export const bakeRecipeSchema = z
       .object({
         positionToleranceMeters: tolerance,
         normalUvTangentTolerance: tolerance,
-        imageMaxChannelError: z.number().int().min(0).max(2),
+        imageMaxChannelError: z.number().int().min(0).max(255),
         imageMaxChangedPixelRatio: tolerance,
       })
       .strict(),

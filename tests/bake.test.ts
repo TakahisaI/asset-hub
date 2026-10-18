@@ -137,6 +137,13 @@ test('rejects unsupported geometry rather than silently losing it', () => {
 });
 test('bake input schema can be exported and sorting is canonical', () => {
   assert.ok(z.toJSONSchema(bakeInputSchema).properties?.groups);
+  assert.equal(normalizeBakeInput(input).checks.imageMaxChannelError, 2);
+  assert.equal(
+    normalizeBakeInput({ ...input, checks: { imageMaxChannelError: 40 } }).checks
+      .imageMaxChannelError,
+    40,
+  );
+  assert.throws(() => normalizeBakeInput({ ...input, checks: { imageMaxChannelError: 256 } }));
   assert.deepEqual(
     normalizeBakeInput({ groups: [{ rootNode: 0, nodes: [2, 1] }] }).groups,
     input.groups,

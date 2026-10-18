@@ -64,7 +64,7 @@ const resultSchema = z
                 pose: z.number().int().nonnegative(),
                 mode: z.enum(['pbr', 'normal', 'wireframe']),
                 view: z.number().int().min(0).max(7),
-                maxError: z.number().min(0).max(2),
+                maxError: z.number().min(0).max(255),
                 changedRatio: z.number().min(0).max(0.001),
               })
               .strict(),
