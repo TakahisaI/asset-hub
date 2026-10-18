@@ -26,7 +26,12 @@ export function profilePath(hash: string) {
 export async function getProfile(hash: string): Promise<RenderProfile | null> {
   const file = profilePath(hash);
   if (!(await exists(file))) return null;
-  const profile = renderProfileSchema.parse(JSON.parse(await readFile(file, 'utf8')));
+  const raw = JSON.parse(await readFile(file, 'utf8'));
+  if (typeof raw?.tool === 'string' && raw.tool !== renderProfileTool)
+    throw new Error(
+      `計測方法の版が異なります（${raw.tool} / ${renderProfileTool}）。比較には同じ版での再計測が必要です。`,
+    );
+  const profile = renderProfileSchema.parse(raw);
   if (profile.glb.hash !== hash) throw new Error('描写プロファイルのGLBハッシュが一致しません');
   return profile;
 }

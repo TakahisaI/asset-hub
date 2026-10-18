@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { categories, type CatalogAsset, type CatalogProblem } from './schema.ts';
 import { Detail } from './detail.tsx';
+import { Compare } from './compare.tsx';
 import { ProfileSummary } from './render-profile.tsx';
 import { Modal } from './modal.tsx';
 import { fmt, mb, api, saveFile } from './ui.ts';
@@ -45,6 +46,7 @@ function App() {
     [sort, setSort] = useState('name'),
     [layout, setLayout] = useState('grid');
   const [selected, setSelected] = useState(new URLSearchParams(location.search).get('asset') ?? ''),
+    [comparing, setComparing] = useState(new URLSearchParams(location.search).has('compare')),
     [toast, setToast] = useState(''),
     [help, setHelp] = useState(false),
     search = useRef<HTMLInputElement>(null);
@@ -63,7 +65,11 @@ function App() {
   };
   useEffect(() => {
     void reload();
-    const pop = () => setSelected(new URLSearchParams(location.search).get('asset') ?? '');
+    const pop = () => {
+      const params = new URLSearchParams(location.search);
+      setSelected(params.get('asset') ?? '');
+      setComparing(params.has('compare'));
+    };
     window.addEventListener('popstate', pop);
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -85,8 +91,11 @@ function App() {
   }, [toast]);
   function select(id: string) {
     setSelected(id);
+    setComparing(false);
     window.scrollTo({ top: 0, behavior: 'instant' });
     const url = new URL(location.href);
+    for (const key of ['compare', 'left', 'leftRevision', 'right', 'rightRevision'])
+      url.searchParams.delete(key);
     id ? url.searchParams.set('asset', id) : url.searchParams.delete('asset');
     history.pushState({}, '', url);
   }
@@ -213,13 +222,15 @@ function App() {
         <header className="topbar">
           <span>
             ライブラリ <ChevronRight size={14} />{' '}
-            {current
-              ? 'アセット詳細'
-              : collection === 'all'
-                ? 'すべてのアセット'
-                : collection === 'notes'
-                  ? '未解決メモあり'
-                  : collection.slice(11)}
+            {comparing
+              ? 'アセット比較'
+              : current
+                ? 'アセット詳細'
+                : collection === 'all'
+                  ? 'すべてのアセット'
+                  : collection === 'notes'
+                    ? '未解決メモあり'
+                    : collection.slice(11)}
           </span>
           <div className="topbar-right">
             <span className="local-pill">
@@ -249,7 +260,9 @@ function App() {
             </details>
           </div>
         )}
-        {current ? (
+        {comparing ? (
+          <Compare assets={assets} onBack={() => select('')} />
+        ) : current ? (
           <Detail
             key={current.id + ':' + current.revision + ':' + (current.behavior ?? '')}
             asset={current}
@@ -272,10 +285,15 @@ function App() {
                 </h1>
                 <p>作品を越えて、探す。確かめる。次の制作へ。</p>
               </div>
-              <button className="primary" onClick={() => setHelp(true)}>
-                <Plus size={17} />
-                アセットを追加
-              </button>
+              <div className="detail-actions">
+                <a className="secondary" href="?compare=1">
+                  アセットを比較
+                </a>
+                <button className="primary" onClick={() => setHelp(true)}>
+                  <Plus size={17} />
+                  アセットを追加
+                </button>
+              </div>
             </div>
             <div className="overview">
               <div>

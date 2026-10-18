@@ -347,6 +347,9 @@ test('profiles are stored by GLB hash and leave the fixed revision untouched', a
     assert.equal(await profiles.saveProfiles([measured]), 1);
     const stored = await profiles.getProfile(asset.revision);
     assert.equal(stored?.scene.drawCalls, 4);
+    await store.atomicJson(profiles.profilePath(hash), { ...measured, tool: 'render-profile/0' });
+    await assert.rejects(() => profiles.getProfile(hash), /計測方法の版が異なります/);
+    await profiles.saveProfiles([measured]);
     // Measuring is a read of the library; the ledger must not gain a revision or a timestamp.
     assert.equal(await readFile(store.assetPath(asset.id), 'utf8'), ledger);
     await t.test('bulk measurement pins revisions during concurrent reimports', async () => {
