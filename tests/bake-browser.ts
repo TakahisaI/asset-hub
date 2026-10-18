@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { SphereGeometry } from 'three';
 import type { Page } from 'playwright';
 import { rigidGlb, animatedGlb } from './fixtures.ts';
 import { readGlb, readGlbBinary, writeGlb } from '../tools/glb.ts';
@@ -43,6 +46,31 @@ export async function testBakeRegistration(base: string, page: Page, temp: strin
   const originalRecord = await readFile(path.join(temp, 'catalog/assets', source.id + '.json'));
   const originalNotes = await getNotes(source.id);
   const input = { groups: [{ rootNode: 0, nodes: [1, 2] }] };
+  const groupsFile = path.join(temp, 'groups.json');
+  await writeFile(groupsFile, JSON.stringify(input));
+  const cliArgs = [
+    '--import',
+    'tsx',
+    'tools/assetctl.ts',
+    'bake',
+    source.id,
+    '--id',
+    'test.baked',
+    '--json',
+    groupsFile,
+  ];
+  const cli = (...args: string[]) =>
+    promisify(execFile)(process.execPath, args, {
+      env: { ...process.env, ASSET_HUB_ROOT: temp },
+    });
+  const viteCache = path.join(temp, '.cache/bake-vite');
+  await assert.rejects(() => readdir(viteCache), /ENOENT/);
+  for (const _cache of ['cold', 'warm']) {
+    const { stdout, stderr } = await cli(...cliArgs);
+    assert.equal(JSON.parse(stdout).registered, false);
+    assert.equal(stderr, '');
+  }
+  assert((await readdir(path.join(viteCache, 'deps'))).includes('_metadata.json'));
   const dry = await bakeAsset(source.id, 'test.baked', input);
   assert.equal(dry.registered, false);
   await assert.rejects(() => getAsset('test.baked'), /ENOENT/);
@@ -86,6 +114,96 @@ export async function testBakeRegistration(base: string, page: Page, temp: strin
   assert(saved.schema === 2);
   await addNote(derived.id, { revision: derived.revision, text: '派生版に残すメモ' });
   const notes = await getNotes(derived.id);
+  const geometry = new SphereGeometry(1, 16, 8).toNonIndexed();
+  const positions = Buffer.from(geometry.attributes.position.array.buffer);
+  const normals = Buffer.from(geometry.attributes.normal.array.buffer);
+  const curved = readGlb(bytes);
+  curved.bufferViews = [
+    { buffer: 0, byteOffset: 0, byteLength: positions.length },
+    { buffer: 0, byteOffset: positions.length, byteLength: normals.length },
+  ];
+  curved.accessors = [
+    {
+      bufferView: 0,
+      componentType: 5126,
+      count: geometry.attributes.position.count,
+      type: 'VEC3',
+      min: [-1, -1, -1],
+      max: [1, 1, 1],
+    },
+    { bufferView: 1, componentType: 5126, count: geometry.attributes.normal.count, type: 'VEC3' },
+  ];
+  curved.meshes![0].primitives = [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 0 }];
+  curved.buffers![0].byteLength = positions.length + normals.length;
+  curved.nodes![1].rotation = [0, 0, Math.sin(0.123), Math.cos(0.123)];
+  curved.nodes![1].translation = [0.137, 0.217, 0.119];
+  curved.nodes![2].scale = [1.3, 0.7, 1.1];
+  const curvedBytes = writeGlb(curved, Buffer.concat([positions, normals]));
+  const curvedAsset = await importGlb(curvedBytes, 'curved.glb', { id: 'test.curved' });
+  await writeFile(
+    groupsFile,
+    JSON.stringify({
+      ...input,
+      checks: { imageMaxChannelError: 0, imageMaxChangedPixelRatio: '0.000000001' },
+    }),
+  );
+  async function libraryFiles(dir: string): Promise<Record<string, string>> {
+    const entries = await readdir(path.join(temp, dir), { withFileTypes: true });
+    const files: Record<string, string> = {};
+    for (const entry of entries) {
+      const name = path.join(dir, entry.name);
+      if (entry.isDirectory()) Object.assign(files, await libraryFiles(name));
+      else files[name] = digest(await readFile(path.join(temp, name)));
+    }
+    return files;
+  }
+  const unchanged = { ...(await libraryFiles('catalog')), ...(await libraryFiles('.store')) };
+  const error = await cli(
+    ...cliArgs.map((x) => (x === source.id ? curvedAsset.id : x)),
+    '--write',
+  ).then(
+    () => assert.fail('Expected the render comparison to reject the candidate'),
+    (error) => error,
+  );
+  {
+    assert.equal(error.code, 1);
+    assert.equal(error.stdout, '');
+    const failure = JSON.parse(error.stderr).error;
+    assert.equal(failure.code, 'BAKE_RENDER_DIFFERENCE');
+    const directory = failure.diagnostics;
+    assert.equal(path.dirname(directory), path.join(temp, '.cache/bake-failures'));
+    const result = JSON.parse(await readFile(path.join(directory, 'result.json'), 'utf8'));
+    const recipe = JSON.parse(await readFile(path.join(directory, 'recipe.json'), 'utf8'));
+    assert.equal(digest(Buffer.from(JSON.stringify(recipe))), result.recipe);
+    assert.equal(recipe.checks.imageMaxChannelError, 0);
+    assert.equal(result.registered, false);
+    assert.equal(result.reproductions, 3);
+    assert(result.geometry.maxPositionError <= Number(recipe.checks.positionToleranceMeters));
+    assert.equal(result.source.revision, curvedAsset.revision);
+    for (const [file, hash] of [
+      ['source.glb', curvedAsset.revision],
+      ['output.glb', result.output],
+    ])
+      assert.equal(digest(await readFile(path.join(directory, file))), hash);
+    const failed = result.render.failure;
+    assert(
+      failed.maxError > 0 || failed.changedRatio > Number(recipe.checks.imageMaxChangedPixelRatio),
+    );
+    assert.deepEqual(result.render.samples.at(-1), failed);
+    for (const suffix of ['source', 'output']) {
+      const png = await readFile(
+        path.join(directory, `${failed.pose}-${failed.mode}-${failed.view}-${suffix}.png`),
+      );
+      assert.equal(png.subarray(1, 4).toString(), 'PNG');
+      assert.equal(png.readUInt32BE(16), 384);
+      assert.equal(png.readUInt32BE(20), 288);
+    }
+  }
+  assert.deepEqual(
+    { ...(await libraryFiles('catalog')), ...(await libraryFiles('.store')) },
+    unchanged,
+  );
+  await writeFile(groupsFile, JSON.stringify(input));
   await bakeAsset(source.id, derived.id, input, undefined, true);
   assert.deepEqual(await getAsset(derived.id), saved);
   assert.deepEqual(await getNotes(derived.id), notes);
