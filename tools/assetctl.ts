@@ -573,6 +573,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         error: {
           code: e.status === 409 ? 'CONFLICT' : (e.code ?? 'INVALID_OPERATION'),
           message: e.message,
+          ...(e.diagnostics ? { diagnostics: e.diagnostics } : {}),
         },
       }),
     );

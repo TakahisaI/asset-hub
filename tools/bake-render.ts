@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { createServer } from 'vite';
+import { root } from '../server/store.ts';
 import { browser } from './browser.ts';
 import type { BakeRecipe } from '../src/bake-schema.ts';
 import type { Behavior } from '../src/schema.ts';
@@ -28,6 +30,8 @@ export async function compareBake(
   });
   const vite = await createServer({
     root: fileURLToPath(new URL('..', import.meta.url)),
+    cacheDir: path.join(root, '.cache/bake-vite'),
+    logLevel: 'silent',
     server: { middlewareMode: true },
     appType: 'spa',
   });
@@ -162,19 +166,26 @@ export async function compareBake(
                   if (error) changed++;
                 }
                 const changedRatio = changed / (pa.length / 4);
-                if (
-                  maxError > checks.imageMaxChannelError ||
-                  changedRatio > Number(checks.imageMaxChangedPixelRatio)
-                )
-                  throw new Error(
-                    `レンダー差が閾値を超えました: pose=${poseIndex} ${mode}/${view} max=${maxError} ratio=${changedRatio}`,
-                  );
-                samples.push({ pose: poseIndex, mode, view, maxError, changedRatio });
+                const sample = { pose: poseIndex, mode, view, maxError, changedRatio };
+                samples.push(sample);
                 for (const [i, v] of viewers.entries())
                   images.push({
                     name: `${poseIndex}-${mode}-${view}-${i === 0 ? 'source' : 'output'}.png`,
                     data: v.capture().split(',')[1],
                   });
+                if (
+                  maxError > checks.imageMaxChannelError ||
+                  changedRatio > Number(checks.imageMaxChangedPixelRatio)
+                )
+                  return {
+                    width: 384,
+                    height: 288,
+                    near: 'span/200',
+                    poses,
+                    samples,
+                    images,
+                    failure: sample,
+                  };
               }
           }
         } finally {
