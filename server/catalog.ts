@@ -10,6 +10,7 @@ import {
 } from './store.ts';
 import { blobAvailable } from './blobs.ts';
 import type { CatalogAsset } from '../src/schema.ts';
+import { getProfile, profilePath } from './profiles.ts';
 
 export async function getCatalog() {
   const [catalog, files, reviews] = await Promise.all([
@@ -34,6 +35,12 @@ export async function getCatalog() {
   const assets: CatalogAsset[] = await Promise.all(
     catalog.assets.map(async (asset) => {
       let notesCount = 0;
+      let profileError = '';
+      const profile = await getProfile(asset.revision).catch((error) => {
+        profileError = (error as Error).message;
+        problems.push(recordProblem(profilePath(asset.revision), error));
+        return null;
+      });
       if (reviewFiles.has(asset.id + '.json')) {
         try {
           notesCount = (await getNotes(asset.id)).filter((n) => !n.resolved).length;
@@ -53,6 +60,8 @@ export async function getCatalog() {
         }),
         thumbnail: stored.has(asset.file.hash + '.png'),
         notesCount,
+        profile,
+        profileError,
       };
     }),
   );

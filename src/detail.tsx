@@ -29,13 +29,14 @@ import { PlaybackControls } from './playback-controls.tsx';
 import { fmt, mb, api, saveFile } from './ui.ts';
 import { useAssetNotes, NotesPanel } from './notes.tsx';
 import { QualityCheck } from './quality-check.tsx';
+import { ProfilePanel } from './render-profile.tsx';
 type DetailProps = {
   asset: CatalogAsset;
   onBack: () => void;
   onUpdate: () => Promise<void>;
   notify: (s: string) => void;
 };
-type Revision = Asset & Pick<CatalogAsset, 'available' | 'thumbnail'>;
+type Revision = Asset & Pick<CatalogAsset, 'available' | 'thumbnail' | 'profile' | 'profileError'>;
 
 export function Detail(props: DetailProps) {
   const [revisions, setRevisions] = useState<Revision[]>([]),
@@ -522,7 +523,7 @@ function DetailView({
           <div className="interaction-hint">
             ドラッグで回転 · スクロールで拡大 · 右ドラッグで移動
           </div>
-          <div className="metrics-strip">
+          <div className="metrics-strip" aria-label="取込時の構造">
             <div>
               <small>三角形</small>
               <strong>{fmt(a.metrics.triangles)}</strong>
@@ -540,6 +541,12 @@ function DetailView({
               <strong>{mb(a.file.bytes)}</strong>
             </div>
           </div>
+          <ProfilePanel
+            profile={a.profile}
+            error={a.profileError}
+            current={currentAsset.profile}
+            compare={readOnly}
+          />
         </section>
         <aside className="inspector">
           <div className="inspector-tabs">

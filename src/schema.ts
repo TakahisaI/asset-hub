@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { vfxInfoSchema } from './vfx-schema.ts';
+import type { RenderProfile } from './render-profile-schema.ts';
 export const categories = {
   buildings: '建築',
   props: '小道具',
@@ -216,7 +217,13 @@ export const reviewNoteSchema = noteInput.extend({
 });
 export type ReviewNote = z.infer<typeof reviewNoteSchema>;
 export type CatalogProblem = { file: string; message: string };
-export type CatalogAsset = Asset & { available: boolean; thumbnail: boolean; notesCount: number };
+export type CatalogAsset = Asset & {
+  available: boolean;
+  thumbnail: boolean;
+  notesCount: number;
+  profile?: RenderProfile | null;
+  profileError?: string;
+};
 export function sourceUrl(a: Asset, path = a.source.path) {
   return `https://github.com/${a.source.repository}/blob/${a.source.commit}/${path.split('/').map(encodeURIComponent).join('/')}`;
 }

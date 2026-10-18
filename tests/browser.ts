@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 import { behaviorSchema } from '../src/schema.ts';
 import { browser } from '../tools/browser.ts';
 import { fixtureAsset, triangleGlb, animatedGlb, vfxGlb } from './fixtures.ts';
+import { profileGlb } from '../tools/profile.ts';
+import { fmt } from '../src/ui.ts';
 const root = process.cwd(),
   temp = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-browser-'));
 const bytes = animatedGlb(true, 0, true);
@@ -77,6 +79,12 @@ assert.equal(libraryRoot, temp);
 const { putBlob } = await import('../server/blobs.ts');
 await putBlob(bytes);
 await putBlob(oldBytes);
+const { saveProfiles } = await import('../server/profiles.ts');
+const currentProfile = profileGlb(bytes);
+const oldProfile = profileGlb(oldBytes);
+oldProfile.scene.drawCalls = 0;
+oldProfile.geometry.trianglesDrawn = 0;
+await saveProfiles([currentProfile, oldProfile]);
 const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], {
   cwd: root,
   env: { ...process.env, PORT: '0', NODE_ENV: 'production', ASSET_HUB_ROOT: temp },
@@ -115,6 +123,14 @@ try {
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(base);
   await page.getByRole('heading', { name: '試験モデル', exact: true }).waitFor();
+  const cardProfile = page.locator('.asset-card').getByLabel('描写負荷');
+  await cardProfile
+    .getByText(`描画コール ${fmt(currentProfile.scene.drawCalls)}`, { exact: true })
+    .waitFor();
+  await page.getByRole('button', { name: 'リスト表示', exact: true }).click();
+  await cardProfile
+    .getByText(`描画三角形 ${fmt(currentProfile.geometry.trianglesDrawn)}`, { exact: true })
+    .waitFor();
   for (const name of ['all', 'notes']) {
     await page
       .getByRole('navigation')
@@ -123,6 +139,11 @@ try {
     assert.equal(await page.locator('.asset-card').count(), 1);
   }
   await page.locator('.asset-card').click();
+  const profilePanel = page.getByRole('region', { name: '描写負荷の詳細', exact: true });
+  await profilePanel
+    .getByText(`描画コール ${fmt(currentProfile.scene.drawCalls)}`, { exact: true })
+    .waitFor();
+  assert.equal(await profilePanel.locator('tbody tr').count(), currentProfile.byMaterial.length);
   await page
     .locator('.viewer-state')
     .waitFor({ state: 'hidden', timeout: 20000 })
@@ -275,6 +296,12 @@ try {
   const revisionSelect = page.getByLabel('表示する版', { exact: true });
   await revisionSelect.focus();
   await revisionSelect.selectOption(oldAsset.revision);
+  await profilePanel.getByText('描画コール 0', { exact: true }).waitFor();
+  await profilePanel
+    .getByLabel('版間差分')
+    .getByText(`−${fmt(currentProfile.scene.drawCalls)}`, { exact: true })
+    .first()
+    .waitFor();
   await page.locator('.viewer-state').waitFor({ state: 'hidden' });
   assert.equal(
     await revisionSelect.evaluate((element) => document.activeElement === element),
@@ -433,6 +460,19 @@ try {
   await assert.rejects(() => readFile(path.join(temp, '.store', oldAsset.revision + '.png')), {
     code: 'ENOENT',
   });
+  const oldProfilePath = path.join(temp, 'catalog/profiles', oldAsset.revision + '.json');
+  await rm(oldProfilePath);
+  await page.reload();
+  await page.getByLabel('表示する版', { exact: true }).selectOption(oldAsset.revision);
+  await profilePanel.getByText('描写負荷：未計測', { exact: true }).waitFor();
+  await profilePanel
+    .getByText('版間差分を表示するには、表示版と現在版の計測が必要です。', { exact: true })
+    .waitFor();
+  await writeFile(oldProfilePath, '{broken');
+  await page.reload();
+  await page.getByLabel('表示する版', { exact: true }).selectOption(oldAsset.revision);
+  await profilePanel.getByText('描写負荷：読込エラー', { exact: true }).waitFor();
+  await saveProfiles([oldProfile]);
   await writeFile(path.join(temp, 'catalog/assets/broken.json'), '{broken');
   await page.goto(base);
   await page.getByRole('alert').getByText('1件のファイルを読み込めませんでした').waitFor();
