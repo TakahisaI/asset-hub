@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -154,6 +154,24 @@ export async function bakeAsset(
     before,
     after,
   };
+  if (render.failure) {
+    const parent = path.join(root, '.cache/bake-failures');
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, recipeHash + '-'));
+    await writeFile(path.join(directory, 'source.glb'), bytes);
+    await writeFile(path.join(directory, 'output.glb'), generated.bytes);
+    await atomicJson(path.join(directory, 'recipe.json'), recipe);
+    for (const image of images)
+      await writeFile(path.join(directory, image.name), Buffer.from(image.data, 'base64'));
+    await atomicJson(path.join(directory, 'result.json'), { ...result, registered: false });
+    const s = render.failure;
+    throw Object.assign(
+      new Error(
+        `レンダー差が閾値を超えました: pose=${s.pose} ${s.mode}/${s.view} max=${s.maxError} ratio=${s.changedRatio}`,
+      ),
+      { code: 'BAKE_RENDER_DIFFERENCE', diagnostics: directory },
+    );
+  }
   if (!write) return { registered: false, id, recipe: recipeHash, result };
   const asset = await withLibraryLock(async () => {
     if (await exists(assetPath(id))) {
