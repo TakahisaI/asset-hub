@@ -46,6 +46,42 @@ function triangleCount(primitive: Primitive, accessors: Accessor[]) {
   if (mode === 5 || mode === 6) return Math.max(0, count - 2);
   return 0;
 }
+// Walk the segment lengths instead of scanning for 0xFFC0. An Exif thumbnail carries its own
+// frame header, and scanning finds it first, reporting the thumbnail as the image.
+function jpegSize(bytes: Uint8Array) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return undefined;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 2;
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset] !== 0xff) return undefined;
+    const marker = bytes[offset + 1];
+    // 0xFF fill bytes and standalone markers carry no length field.
+    if (marker === 0xff) {
+      offset++;
+      continue;
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) {
+      offset += 2;
+      continue;
+    }
+    // Entropy-coded data starts before any frame header would have been found.
+    if (marker === 0xd9 || marker === 0xda) return undefined;
+    const length = view.getUint16(offset + 2);
+    if (length < 2) return undefined;
+    if (
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      marker !== 0xc4 &&
+      marker !== 0xc8 &&
+      marker !== 0xcc
+    )
+      return offset + 9 <= bytes.length
+        ? { width: view.getUint16(offset + 7), height: view.getUint16(offset + 5) }
+        : undefined;
+    offset += 2 + length;
+  }
+  return undefined;
+}
 // Dimensions decide VRAM, compressed bytes do not. glTF only allows PNG and JPEG.
 export function imageSize(bytes: Uint8Array) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -57,15 +93,18 @@ export function imageSize(bytes: Uint8Array) {
     bytes[3] === 0x47
   )
     return { width: view.getUint32(16), height: view.getUint32(20) };
-  for (let i = 2; i + 9 < bytes.length; i++)
-    if (
-      bytes[i] === 0xff &&
-      bytes[i + 1] >= 0xc0 &&
-      bytes[i + 1] <= 0xcf &&
-      ![0xc4, 0xc8, 0xcc].includes(bytes[i + 1])
-    )
-      return { width: view.getUint16(i + 7), height: view.getUint16(i + 5) };
-  return undefined;
+  return jpegSize(bytes);
+}
+// glTF allows images to be embedded either in the binary chunk or as a data URI.
+function dataUriImage(uri: string) {
+  const comma = uri.indexOf(',');
+  if (!uri.startsWith('data:') || comma < 0) return undefined;
+  const meta = uri.slice(5, comma);
+  if (!meta.endsWith(';base64')) return undefined;
+  return {
+    mimeType: meta.slice(0, Math.max(0, meta.indexOf(';'))),
+    bytes: Buffer.from(uri.slice(comma + 1), 'base64'),
+  };
 }
 export function profileGlb(
   bytes: Uint8Array,
@@ -111,35 +150,46 @@ export function profileGlb(
   let primitivesWithTangent = 0;
   let primitivesWithColor = 0;
   let primitivesWithSkin = 0;
-  let tangentBytesUnused = 0;
   const vertexAccessors = new Set<number>();
   const indexAccessors = new Set<number>();
+  // A tangent accessor is only wasted when no primitive that uses it samples a normal map.
+  const tangentAccessors = new Set<number>();
+  const tangentAccessorsUsed = new Set<number>();
   for (const mesh of meshes)
     for (const primitive of mesh.primitives ?? []) {
       triangles += triangleCount(primitive, accessors);
       vertices += accessors[primitive.attributes.POSITION ?? -1]?.count ?? 0;
       for (const index of Object.values(primitive.attributes)) vertexAccessors.add(index);
+      // Morph targets hold real vertex data and are uploaded alongside the base attributes.
+      for (const target of primitive.targets ?? [])
+        for (const index of Object.values(target)) vertexAccessors.add(index);
       if (primitive.indices !== undefined) indexAccessors.add(primitive.indices);
       if (primitive.attributes.TEXCOORD_0 !== undefined) primitivesWithUv++;
       if (primitive.attributes.TANGENT !== undefined) {
         primitivesWithTangent++;
-        // Tangents only pay for themselves when the material samples a normal map.
-        if (!materials[primitive.material ?? -1]?.normalTexture)
-          tangentBytesUnused += accessorBytes(accessors[primitive.attributes.TANGENT]);
+        const tangent = primitive.attributes.TANGENT;
+        tangentAccessors.add(tangent);
+        if (materials[primitive.material ?? -1]?.normalTexture) tangentAccessorsUsed.add(tangent);
       }
       if (primitive.attributes.COLOR_0 !== undefined) primitivesWithColor++;
       if (primitive.attributes.JOINTS_0 !== undefined) primitivesWithSkin++;
     }
+  const tangentBytesUnused = [...tangentAccessors]
+    .filter((index) => !tangentAccessorsUsed.has(index))
+    .reduce((total, index) => total + accessorBytes(accessors[index]), 0);
   const binary = readGlbBinary(bytes);
   const images = (gltf.images ?? []).map((image) => {
     const view = image.bufferView === undefined ? undefined : gltf.bufferViews?.[image.bufferView];
-    const offset = view?.byteOffset ?? 0;
-    const size =
-      binary && view ? imageSize(binary.subarray(offset, offset + view.byteLength)) : undefined;
+    const embedded = image.uri ? dataUriImage(image.uri) : undefined;
+    const data =
+      view && binary
+        ? binary.subarray(view.byteOffset ?? 0, (view.byteOffset ?? 0) + view.byteLength)
+        : embedded?.bytes;
+    const size = data ? imageSize(data) : undefined;
     return {
       ...(image.name ? { name: image.name } : {}),
-      mimeType: image.mimeType ?? '',
-      bytes: view?.byteLength ?? 0,
+      mimeType: image.mimeType ?? embedded?.mimeType ?? '',
+      bytes: view?.byteLength ?? embedded?.bytes.length ?? 0,
       width: size?.width ?? 0,
       height: size?.height ?? 0,
     };

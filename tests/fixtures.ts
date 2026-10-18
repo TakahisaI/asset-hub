@@ -186,10 +186,13 @@ export function profiledGlb() {
     bufferViews: views,
     accessors,
   };
+  return rawGlb(gltf, Buffer.concat(chunks));
+}
+// Minimal GLB assembly for tests that need a specific malformed or unusual document.
+export function rawGlb(gltf: Record<string, unknown>, bin = Buffer.alloc(0)) {
   const json = Buffer.from(JSON.stringify(gltf));
   const padded = Buffer.alloc(Math.ceil(json.length / 4) * 4, 32);
   json.copy(padded);
-  const bin = Buffer.concat(chunks);
   const bytes = Buffer.alloc(28 + padded.length + bin.length);
   bytes.write('glTF');
   bytes.writeUInt32LE(2, 4);

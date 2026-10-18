@@ -44,33 +44,30 @@ export const renderProfileSchema = z
         bytes: count,
         decodedBytes: count,
         maxEdge: count,
-        items: z
-          .array(
-            z
-              .object({
-                name: z.string().optional(),
-                mimeType: z.string(),
-                bytes: count,
-                width: count,
-                height: count,
-              })
-              .strict(),
-          )
-          .max(256),
+        items: z.array(
+          z
+            .object({
+              name: z.string().optional(),
+              mimeType: z.string(),
+              bytes: count,
+              width: count,
+              height: count,
+            })
+            .strict(),
+        ),
       })
       .strict(),
-    byMaterial: z
-      .array(
-        z
-          .object({
-            name: z.string(),
-            drawCalls: count,
-            triangles: count,
-            doubleSided: z.boolean(),
-          })
-          .strict(),
-      )
-      .max(256),
+    // No upper bound: a model with 257 materials is unusual, not invalid.
+    byMaterial: z.array(
+      z
+        .object({
+          name: z.string(),
+          drawCalls: count,
+          triangles: count,
+          doubleSided: z.boolean(),
+        })
+        .strict(),
+    ),
   })
   .strict();
 export type RenderProfile = z.infer<typeof renderProfileSchema>;

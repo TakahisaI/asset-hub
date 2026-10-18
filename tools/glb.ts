@@ -31,6 +31,7 @@ export type Gltf = {
   meshes?: {
     primitives: {
       attributes: Record<string, number>;
+      targets?: Record<string, number>[];
       indices?: number;
       material?: number;
       mode?: number;

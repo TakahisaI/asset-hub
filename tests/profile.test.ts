@@ -1,4 +1,4 @@
-import { profiledGlb } from './fixtures.ts';
+import { profiledGlb, rawGlb } from './fixtures.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -56,6 +56,162 @@ test('material totals add up to the drawn triangles', () => {
     profile.byMaterial.reduce((total, entry) => total + entry.drawCalls, 0),
     profile.scene.drawCalls,
   );
+});
+// --- regression cases reported on the first version of the profile ---
+const TRI = [0, 0, 0, 1, 0, 0, 0, 1, 0];
+const TAN = [1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1];
+const floats = (values: number[]) => Buffer.from(new Float32Array(values).buffer);
+const shorts = (values: number[]) => Buffer.from(new Uint16Array(values).buffer);
+const triangleBin = () => Buffer.concat([floats(TRI), shorts([0, 1, 2])]);
+const triangleAccessors = [
+  { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+  { bufferView: 1, componentType: 5123, count: 3, type: 'SCALAR' },
+];
+const triangleGltf = (extra: Record<string, unknown>) => ({
+  asset: { version: '2.0' },
+  scene: 0,
+  scenes: [{ nodes: [0] }],
+  nodes: [{ mesh: 0 }],
+  meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+  bufferViews: [
+    { buffer: 0, byteOffset: 0, byteLength: 36 },
+    { buffer: 0, byteOffset: 36, byteLength: 6 },
+  ],
+  accessors: triangleAccessors,
+  ...extra,
+});
+test('a model with 257 materials is measured instead of rejected', () => {
+  const materials = Array.from({ length: 257 }, (_, index) => ({ name: `m${index}` }));
+  const primitives = materials.map((_, index) => ({
+    attributes: { POSITION: 0 },
+    indices: 1,
+    material: index,
+  }));
+  const many = profileGlb(
+    rawGlb(
+      triangleGltf({
+        meshes: [{ primitives }],
+        materials,
+      }),
+      triangleBin(),
+    ),
+  );
+  assert.equal(many.byMaterial.length, 257);
+  assert.equal(many.scene.drawCalls, 257);
+  assert.equal(renderProfileSchema.safeParse(many).success, true);
+});
+test('images embedded as data URIs are measured like bufferView images', () => {
+  const png =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const embedded = profileGlb(
+    rawGlb(
+      triangleGltf({
+        images: [{ uri: `data:image/png;base64,${png}` }],
+        textures: [{ source: 0 }],
+      }),
+      triangleBin(),
+    ),
+  );
+  assert.equal(embedded.textures.count, 1);
+  assert.equal(embedded.textures.maxEdge, 1);
+  assert.equal(embedded.textures.decodedBytes, 4);
+  assert.equal(embedded.textures.items[0].mimeType, 'image/png');
+  assert.ok(embedded.textures.items[0].bytes > 0);
+});
+test('a JPEG thumbnail in Exif is not mistaken for the image', () => {
+  const thumbnail = Buffer.from([
+    0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11,
+    0x01, 0x03, 0x11, 0x01,
+  ]);
+  const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0x00, 0x00]), thumbnail, Buffer.alloc(20)]);
+  app1.writeUInt16BE(app1.length - 2, 2);
+  const frame = Buffer.from([
+    0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x90, 0x01, 0x90, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11,
+    0x01, 0x03, 0x11, 0x01,
+  ]);
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), app1, frame, Buffer.from([0xff, 0xd9])]);
+  assert.deepEqual(imageSize(jpeg), { width: 400, height: 400 });
+});
+test('morph target vertex data counts toward vertex bytes', () => {
+  const morphed = profileGlb(
+    rawGlb(
+      triangleGltf({
+        meshes: [
+          {
+            primitives: [
+              { attributes: { POSITION: 0 }, targets: [{ POSITION: 2 }], indices: 1 },
+            ],
+          },
+        ],
+        bufferViews: [
+          { buffer: 0, byteOffset: 0, byteLength: 36 },
+          { buffer: 0, byteOffset: 36, byteLength: 6 },
+          { buffer: 0, byteOffset: 42, byteLength: 36 },
+        ],
+        accessors: [
+          ...triangleAccessors,
+          { bufferView: 2, componentType: 5126, count: 3, type: 'VEC3' },
+        ],
+      }),
+      Buffer.concat([floats(TRI), shorts([0, 1, 2]), floats(TRI)]),
+    ),
+  );
+  assert.equal(morphed.geometry.vertexBytes, 72);
+});
+test('a tangent accessor shared by several primitives is counted once', () => {
+  const shared = profileGlb(
+    rawGlb(
+      triangleGltf({
+        meshes: [
+          {
+            primitives: [
+              { attributes: { POSITION: 0, TANGENT: 2 }, indices: 1, material: 0 },
+              { attributes: { POSITION: 0, TANGENT: 2 }, indices: 1, material: 1 },
+            ],
+          },
+        ],
+        materials: [{ name: 'a' }, { name: 'b' }],
+        bufferViews: [
+          { buffer: 0, byteOffset: 0, byteLength: 36 },
+          { buffer: 0, byteOffset: 36, byteLength: 6 },
+          { buffer: 0, byteOffset: 42, byteLength: 48 },
+        ],
+        accessors: [
+          ...triangleAccessors,
+          { bufferView: 2, componentType: 5126, count: 3, type: 'VEC4' },
+        ],
+      }),
+      Buffer.concat([floats(TRI), shorts([0, 1, 2]), floats(TAN)]),
+    ),
+  );
+  assert.equal(shared.attributes.tangentBytesUnused, 48);
+  // One primitive with a normal map makes the shared accessor worth keeping.
+  const used = profileGlb(
+    rawGlb(
+      triangleGltf({
+        meshes: [
+          {
+            primitives: [
+              { attributes: { POSITION: 0, TANGENT: 2 }, indices: 1, material: 0 },
+              { attributes: { POSITION: 0, TANGENT: 2 }, indices: 1, material: 1 },
+            ],
+          },
+        ],
+        materials: [{ name: 'a', normalTexture: { index: 0 } }, { name: 'b' }],
+        bufferViews: [
+          { buffer: 0, byteOffset: 0, byteLength: 36 },
+          { buffer: 0, byteOffset: 36, byteLength: 6 },
+          { buffer: 0, byteOffset: 42, byteLength: 48 },
+        ],
+        accessors: [
+          ...triangleAccessors,
+          { bufferView: 2, componentType: 5126, count: 3, type: 'VEC4' },
+        ],
+      }),
+      Buffer.concat([floats(TRI), shorts([0, 1, 2]), floats(TAN)]),
+    ),
+  );
+  assert.equal(used.attributes.tangentBytesUnused, 0);
 });
 test('profiles are stored by GLB hash and leave the fixed revision untouched', async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-profile-'));
