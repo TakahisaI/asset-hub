@@ -201,8 +201,6 @@ export async function bakeAsset(
         path: 'tools/bake.ts',
         kind: 'procedural',
         upstreamId: sourceId,
-        specification: recipePath(recipeHash),
-        verification: path.join(root, 'catalog/recipes/results', recipeHash + '.json'),
         scope:
           '固定版の剛体グループを材質・頂点属性構成ごとに統合。正本・部位別検査の代用にはなりません。',
         integrationNote:

@@ -752,7 +752,7 @@ function DetailView({
                     </span>
                     <ArrowUpRight size={16} />
                   </a>
-                  {a.source.specification && (
+                  {a.schema === 1 && a.source.specification && (
                     <a
                       className="text-link"
                       href={sourceUrl(a, a.source.specification)}
@@ -763,7 +763,7 @@ function DetailView({
                       <ExternalLink size={12} />
                     </a>
                   )}
-                  {a.source.verification && (
+                  {a.schema === 1 && a.source.verification && (
                     <a
                       className="text-link"
                       href={sourceUrl(a, a.source.verification)}

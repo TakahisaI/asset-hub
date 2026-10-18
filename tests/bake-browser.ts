@@ -52,6 +52,8 @@ export async function testBakeRegistration(base: string, page: Page, temp: strin
   assert.equal(written.registered, true);
   assert.equal(derived.schema, 2);
   assert(derived.schema === 2);
+  assert.equal(derived.source.specification, undefined);
+  assert.equal(derived.source.verification, undefined);
   assert.deepEqual(derived.derivedFrom, {
     id: source.id,
     revision: source.revision,
@@ -96,8 +98,23 @@ export async function testBakeRegistration(base: string, page: Page, temp: strin
     () => registerAsset({ ...record, schema: 1 }, { expected: saved.updatedAt }),
     /派生/,
   );
+  const assetFile = path.join(temp, 'catalog/assets', derived.id + '.json');
+  await writeFile(
+    assetFile,
+    JSON.stringify({
+      ...saved,
+      source: {
+        ...saved.source,
+        specification: '/old-library/recipe.json',
+        verification: '/old-library/result.json',
+      },
+    }),
+  );
   await page.goto(base + '?asset=' + derived.id);
   await page.getByRole('heading', { name: '統合した派生アセット', exact: true }).waitFor();
+  assert.equal(await page.getByRole('link', { name: '制作仕様', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('link', { name: '出典の検査記録', exact: true }).count(), 0);
+  await writeFile(assetFile, JSON.stringify(saved));
   assert.equal(
     await page
       .getByRole('link', { name: '正本を開く：' + source.id, exact: true })
