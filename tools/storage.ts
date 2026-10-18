@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { assetSchema, idSchema, hashSchema } from '../src/schema.ts';
 import { blobDir, getBlobRecord, blobAvailable, cacheDir, cacheLimit } from '../server/blobs.ts';
 import { getBehavior } from '../server/operations.ts';
+import { getDerivation } from '../server/recipes.ts';
 import {
   directoryEntries,
   fileStat,
@@ -41,6 +42,19 @@ export async function inspectStorage() {
   for (const asset of assets) {
     retain(asset.file.hash, `asset:${asset.id}`);
     retainVfx(asset, `vfx:${asset.id}`);
+    if (asset.schema === 2) {
+      retain(asset.derivedFrom.revision, `derived:${asset.id}`);
+      try {
+        await getDerivation(asset);
+      } catch (error) {
+        problems.push(
+          recordProblem(
+            path.join(root, 'catalog/recipes', asset.derivedFrom.recipe + '.json'),
+            error,
+          ),
+        );
+      }
+    }
   }
   const revisionsDir = path.join(root, 'catalog/revisions');
   for (const entry of await directoryEntries(revisionsDir)) {
@@ -61,6 +75,10 @@ export async function inspectStorage() {
             throw new Error('固定版のIDまたはハッシュが一致しません');
           retain(asset.file.hash, `revision:${id}`);
           retainVfx(asset, `vfx-revision:${id}`);
+          if (asset.schema === 2) {
+            retain(asset.derivedFrom.revision, `derived-revision:${id}`);
+            await getDerivation(asset);
+          }
         } catch (error) {
           problems.push(recordProblem(filename, error));
         }

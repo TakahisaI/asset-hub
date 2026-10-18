@@ -14,6 +14,9 @@ export const categories = {
 };
 export const idSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,159}$/);
 export const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const derivedFromSchema = z
+  .object({ id: idSchema, revision: hashSchema, recipe: hashSchema })
+  .strict();
 export const downloadSchema = z
   .object({
     repository: z.string().regex(/^[\w-]+\/[\w.-]+$/),
@@ -108,7 +111,7 @@ export const playbackSchema = z
     loop: z.boolean(),
   })
   .strict();
-const assetRecordSchema = z
+export const assetRecordSchema = z
   .object({
     schema: z.literal(1),
     id: idSchema,
@@ -185,10 +188,16 @@ const assetRecordSchema = z
     updatedAt: z.iso.datetime(),
   })
   .strict();
-export const assetSchema = assetRecordSchema.refine(
-  (asset) => asset.revision === asset.file.hash,
-  'リビジョンとGLBハッシュが一致しません',
-);
+export const assetSchema = z
+  .discriminatedUnion('schema', [
+    assetRecordSchema,
+    assetRecordSchema.extend({ schema: z.literal(2), derivedFrom: derivedFromSchema }),
+  ])
+  .refine((asset) => asset.revision === asset.file.hash, 'リビジョンとGLBハッシュが一致しません')
+  .refine(
+    (asset) => asset.schema !== 2 || asset.id !== asset.derivedFrom.id,
+    '派生元と同じIDには登録できません',
+  );
 export type Asset = z.infer<typeof assetSchema>;
 export const editSchema = assetRecordSchema
   .pick({

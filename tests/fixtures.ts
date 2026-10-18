@@ -3,6 +3,32 @@ import { inspectGlb } from '../tools/inspect.ts';
 import type { Asset } from '../src/schema.ts';
 import { SphereGeometry } from 'three';
 import type { Vfx } from '../src/vfx-schema.ts';
+import { readGlb, writeGlb, readGlbBinary } from '../tools/glb.ts';
+
+export function rigidGlb() {
+  const bytes = triangleGlb();
+  const g = readGlb(bytes);
+  g.nodes = [
+    { name: 'Root', children: [1, 2] },
+    { name: 'Left', mesh: 0 },
+    { name: 'Right', mesh: 0, translation: [2, 0, 0] },
+  ];
+  const normal = Buffer.from(new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]).buffer);
+  const tangent = Buffer.from(new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]).buffer);
+  g.bufferViews!.push(
+    { buffer: 0, byteOffset: 36, byteLength: normal.length },
+    { buffer: 0, byteOffset: 72, byteLength: tangent.length },
+  );
+  g.accessors!.push(
+    { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+    { bufferView: 2, componentType: 5126, count: 3, type: 'VEC4' },
+  );
+  g.meshes![0].primitives[0].attributes = { POSITION: 0, NORMAL: 1, TANGENT: 2 };
+  g.materials = [{ name: 'wood', doubleSided: true }];
+  g.meshes![0].primitives[0].material = 0;
+  g.buffers![0].byteLength = 120;
+  return writeGlb(g, Buffer.concat([readGlbBinary(bytes)!, normal, tangent]));
+}
 
 export function vfxGlb(runtime: string, source: string, preview?: string) {
   const original = animatedGlb();
