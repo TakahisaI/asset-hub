@@ -2,10 +2,50 @@ import { Color, Light, Mesh, REVISION, type Group } from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { AssetViewer } from './viewer.ts';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import type { ComparisonSettings } from './comparison-settings.ts';
 
 // Both models share one camera and drawing buffer; switching never fits or moves either model.
 export class CompareViewer extends AssetViewer {
   other: Group | null = null;
+  private savedAspect?: number;
+  onResize?: () => void;
+  constructor(host: HTMLElement) {
+    super(host);
+    this.resize.disconnect();
+    this.resize = new ResizeObserver(() => {
+      const width = host.clientWidth,
+        height = host.clientHeight;
+      if (!width || !height) return;
+      this.renderer.setSize(width, height);
+      this.camera.aspect = this.savedAspect ?? width / height;
+      this.camera.updateProjectionMatrix();
+      this.onResize?.();
+    });
+    this.resize.observe(host);
+  }
+  restoreConditions(settings: ComparisonSettings) {
+    const c = settings.camera;
+    this.savedAspect = c.aspect;
+    this.camera.up.fromArray(c.up);
+    this.controls.dispose();
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = false;
+    this.camera.fov = c.fov;
+    this.camera.near = c.near;
+    this.camera.far = c.far;
+    this.camera.aspect = c.aspect;
+    this.camera.updateProjectionMatrix();
+    this.restore(c);
+    this.renderer.setPixelRatio(settings.viewport.pixelRatio);
+    this.renderer.setSize(this.host.clientWidth, this.host.clientHeight);
+    this.mode(settings.mode);
+    this.lighting(settings.lighting);
+    this.renderer.setClearColor(settings.background);
+    this.renderer.toneMappingExposure = settings.exposure;
+    if (this.grid) this.grid.visible = settings.grid;
+    this.show(settings.displayed === 'A' ? 0 : 1);
+  }
   async loadPair(left: string, right: string) {
     await this.load(left);
     if (this.disposed) return;
