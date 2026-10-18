@@ -23,6 +23,8 @@ import {
   hashSchema,
   idSchema,
 } from '../src/schema.ts';
+import { renderProfileSchema } from '../src/render-profile-schema.ts';
+import { measureAsset, measureAll, saveProfiles } from '../server/profiles.ts';
 import { root, getAsset, listAssets, exists, atomicJson } from '../server/store.ts';
 import {
   importGlb,
@@ -247,6 +249,7 @@ const help = {
     'search [query] [--tag value] [--collection value] [--category value] [--kind model|motion]',
     'get <id> [--revision sha256]',
     'inspect <id> [--revision sha256]',
+    'profile <id> [--revision sha256] [--write] | profile --all [--write] [--refresh]',
     'revisions <id>',
     'add <file.glb> --id <id> [--name name] [--metadata file.json|-]',
     'update <id> --json file.json|- --if-match updatedAt',
@@ -263,7 +266,7 @@ const help = {
     'backup --out new-directory | backup verify directory',
     'restore --from backup-directory --into new-library-directory',
     'storage migrate --backup new-directory',
-    'schema asset|edit|behavior|import|note',
+    'schema asset|edit|behavior|import|note|profile',
   ],
 };
 async function main() {
@@ -290,7 +293,8 @@ async function main() {
       'backup',
     ].map((k) => [k, { type: 'string' }]),
   );
-  for (const key of ['force', 'dry-run', 'update', 'help']) options[key] = { type: 'boolean' };
+  for (const key of ['force', 'dry-run', 'update', 'help', 'write', 'all', 'refresh'])
+    options[key] = { type: 'boolean' };
   const { values: v, positionals: args } = parseArgs({
     args: argv,
     options,
@@ -303,6 +307,7 @@ async function main() {
     search: ['tag', 'collection', 'category', 'kind'],
     get: ['revision'],
     inspect: ['revision'],
+    profile: ['revision', 'write', 'all', 'refresh'],
     revisions: [],
     add: [
       'id',
@@ -354,6 +359,7 @@ async function main() {
       behavior: behaviorSchema,
       import: importManifestSchema,
       note: noteInput,
+      profile: renderProfileSchema,
     };
     if (!(args[0] in schemas)) throw new Error('不明なスキーマ');
     result = z.toJSONSchema(schemas[args[0] as keyof typeof schemas]);
@@ -376,6 +382,26 @@ async function main() {
   } else if (command === 'inspect') {
     count(1);
     result = await inspectAsset(args[0], value('revision') || undefined);
+  } else if (command === 'profile') {
+    if (v.all) {
+      count(0);
+      const measured = await measureAll(Boolean(v.refresh));
+      if (v.write) await saveProfiles(measured.map((entry) => entry.profile));
+      result = measured.map(({ id, revision, profile, reused }) => ({
+        id,
+        revision,
+        reused,
+        drawCalls: profile.scene.drawCalls,
+        trianglesDrawn: profile.geometry.trianglesDrawn,
+        vertexBytes: profile.geometry.vertexBytes,
+        textureBytes: profile.textures.decodedBytes,
+      }));
+    } else {
+      count(1);
+      const profile = await measureAsset(args[0], value('revision') || undefined);
+      if (v.write) await saveProfiles([profile]);
+      result = profile;
+    }
   } else if (command === 'revisions') {
     count(1);
     await getAsset(args[0]);
