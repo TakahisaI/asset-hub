@@ -1,6 +1,9 @@
 import { Matrix4, Quaternion, Vector3 } from 'three';
 
 export type Gltf = {
+  extensionsUsed?: string[];
+  extensionsRequired?: string[];
+  extras?: Record<string, unknown>;
   scene?: number;
   scenes?: { nodes?: number[] }[];
   nodes?: {
@@ -12,6 +15,7 @@ export type Gltf = {
     translation?: number[];
     rotation?: number[];
     scale?: number[];
+    extras?: Record<string, unknown>;
     extensions?: {
       KHR_lights_punctual?: { light: number };
       EXT_mesh_gpu_instancing?: { attributes: Record<string, number> };
@@ -19,8 +23,8 @@ export type Gltf = {
   }[];
   animations?: {
     name?: string;
-    samplers: { input: number }[];
-    channels: { target: { node?: number; path: string } }[];
+    samplers: { input: number; output?: number; interpolation?: string }[];
+    channels: { sampler?: number; target: { node?: number; path: string } }[];
   }[];
   accessors?: {
     min?: number[];
@@ -29,8 +33,18 @@ export type Gltf = {
     componentType?: number;
     type?: string;
     bufferView?: number;
+    byteOffset?: number;
+    normalized?: boolean;
+    sparse?: unknown;
   }[];
-  bufferViews?: { buffer: number; byteLength: number; byteOffset?: number }[];
+  bufferViews?: {
+    buffer: number;
+    byteLength: number;
+    byteOffset?: number;
+    byteStride?: number;
+    target?: number;
+  }[];
+  skins?: { inverseBindMatrices?: number }[];
   meshes?: {
     primitives: {
       attributes: Record<string, number>;
@@ -38,12 +52,14 @@ export type Gltf = {
       indices?: number;
       material?: number;
       mode?: number;
+      extensions?: Record<string, unknown>;
     }[];
   }[];
   materials?: {
     name?: string;
     doubleSided?: boolean;
     normalTexture?: unknown;
+    alphaMode?: string;
     extensions?: {
       KHR_materials_clearcoat?: { clearcoatNormalTexture?: unknown };
       KHR_materials_anisotropy?: { anisotropyStrength?: number };
@@ -65,6 +81,23 @@ export function readGlb(bytes: Uint8Array): Gltf {
   if (buf.readUInt32LE(16) !== 0x4e4f534a || length + 20 > buf.length)
     throw new Error('GLB JSONチャンクが壊れています');
   return JSON.parse(buf.toString('utf8', 20, 20 + length));
+}
+export function writeGlb(gltf: Gltf, binary: Uint8Array) {
+  const json = Buffer.from(JSON.stringify(gltf));
+  const jsonLength = Math.ceil(json.length / 4) * 4;
+  const binLength = Math.ceil(binary.length / 4) * 4;
+  const bytes = Buffer.alloc(28 + jsonLength + binLength);
+  bytes.write('glTF');
+  bytes.writeUInt32LE(2, 4);
+  bytes.writeUInt32LE(bytes.length, 8);
+  bytes.writeUInt32LE(jsonLength, 12);
+  bytes.writeUInt32LE(0x4e4f534a, 16);
+  bytes.fill(32, 20, 20 + jsonLength);
+  json.copy(bytes, 20);
+  bytes.writeUInt32LE(binLength, 20 + jsonLength);
+  bytes.writeUInt32LE(0x004e4942, 24 + jsonLength);
+  bytes.set(binary, 28 + jsonLength);
+  return bytes;
 }
 // The first buffer uses the BIN chunk when it has no URI.
 export function readGlbBinary(bytes: Uint8Array) {

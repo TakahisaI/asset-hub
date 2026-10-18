@@ -22,6 +22,7 @@ import {
   noteInput,
   hashSchema,
   idSchema,
+  derivedFromSchema,
 } from '../src/schema.ts';
 import { renderProfileSchema } from '../src/render-profile-schema.ts';
 import { measureAsset, measureAll, saveProfiles } from '../server/profiles.ts';
@@ -46,6 +47,8 @@ import { inspectStorage } from './storage.ts';
 import { putBlob, withBlob, manifestPath, fileDigest } from '../server/blobs.ts';
 import { backupLibrary, verifyBackup, restoreBackup } from './backup.ts';
 import { doctor, migrateStorage } from './maintenance.ts';
+import { getDerivation } from '../server/recipes.ts';
+import { bakeRecipeSchema, bakeInputSchema } from '../src/bake-schema.ts';
 export const lockSchema = z.object({
   schema: z.literal(1),
   assets: z
@@ -58,6 +61,7 @@ export const lockSchema = z.object({
         sha256: hashSchema,
         file: z.string().optional(),
         source: z.unknown().optional(),
+        derivedFrom: derivedFromSchema.optional(),
       }),
     )
     .min(1)
@@ -131,6 +135,25 @@ export async function syncLock(raw: unknown, out: string, force = false) {
           } else plan.push({ staged, target, hash, cache: false });
         }
       }
+      if (revision.schema === 2) {
+        if (JSON.stringify(item.derivedFrom) !== JSON.stringify(revision.derivedFrom))
+          throw new Error('lockと固定版の派生来歴が一致しません');
+        const derivation = await getDerivation(revision);
+        const staged = path.join(staging, revision.derivedFrom.recipe + '.derivation.json');
+        const target = path.join(
+          path.resolve(out),
+          revision.derivedFrom.recipe + '.derivation.json',
+        );
+        await writeFile(staged, JSON.stringify(derivation, null, 2) + '\n');
+        if (!plan.some((p) => p.target === target)) {
+          if (await exists(target)) {
+            if ((await fileDigest(target)) !== (await fileDigest(staged))) {
+              if (!force) throw new Error('異なる来歴ファイルがあります: ' + target);
+              plan.push({ staged, target, hash: revision.derivedFrom.recipe, cache: false });
+            }
+          } else plan.push({ staged, target, hash: revision.derivedFrom.recipe, cache: false });
+        }
+      } else if (item.derivedFrom) throw new Error('派生でない固定版に派生来歴を指定できません');
       const staged = path.join(staging, item.sha256 + '.glb');
       const cache = !(await exists(manifestPath(item.sha256)));
       if (!(await exists(staged))) {
@@ -206,10 +229,12 @@ export async function createLock(ids: string[]) {
       variant: 'glb' as const,
       sha256: a.revision,
       ...(a.behavior ? { behavior: a.behavior } : {}),
+      ...(a.schema === 2 ? { derivedFrom: a.derivedFrom } : {}),
     };
     const existing = assets.find((x) => x.id === id && x.revision === a.revision);
     if (existing) Object.assign(existing, entry);
     else assets.push(entry);
+    if (a.schema === 2) await getDerivation(a);
     if (a.behavior) {
       const b = await getBehavior(a.behavior);
       if (b.assetId !== id || b.modelRevision !== a.revision)
@@ -217,13 +242,15 @@ export async function createLock(ids: string[]) {
       for (const preset of b.presets)
         if (preset.clip?.source) {
           const source = preset.clip.source;
-          await getRevision(source.id, source.revision);
+          const fixed = await getRevision(source.id, source.revision);
+          if (fixed.schema === 2) await getDerivation(fixed);
           if (!assets.some((a) => a.id === source.id && a.revision === source.revision))
             assets.push({
               id: source.id,
               revision: source.revision,
               sha256: source.revision,
               variant: 'glb',
+              ...(fixed.schema === 2 ? { derivedFrom: fixed.derivedFrom } : {}),
             });
         }
     }
@@ -250,6 +277,7 @@ const help = {
     'get <id> [--revision sha256]',
     'inspect <id> [--revision sha256]',
     'profile <id> [--revision sha256] [--write] | profile --all [--write] [--refresh]',
+    'bake <source-id> --id <new-id> --json groups.json [--revision sha256] [--write]',
     'revisions <id>',
     'add <file.glb> --id <id> [--name name] [--metadata file.json|-]',
     'update <id> --json file.json|- --if-match updatedAt',
@@ -266,7 +294,7 @@ const help = {
     'backup --out new-directory | backup verify directory',
     'restore --from backup-directory --into new-library-directory',
     'storage migrate --backup new-directory',
-    'schema asset|edit|behavior|import|note|profile',
+    'schema asset|edit|behavior|import|note|profile|bake|recipe',
   ],
 };
 async function main() {
@@ -308,6 +336,7 @@ async function main() {
     get: ['revision'],
     inspect: ['revision'],
     profile: ['revision', 'write', 'all', 'refresh'],
+    bake: ['id', 'json', 'revision', 'write'],
     revisions: [],
     add: [
       'id',
@@ -360,6 +389,8 @@ async function main() {
       import: importManifestSchema,
       note: noteInput,
       profile: renderProfileSchema,
+      bake: bakeInputSchema,
+      recipe: bakeRecipeSchema,
     };
     if (!(args[0] in schemas)) throw new Error('不明なスキーマ');
     result = z.toJSONSchema(schemas[args[0] as keyof typeof schemas]);
@@ -402,6 +433,16 @@ async function main() {
       if (v.write) await saveProfiles([profile]);
       result = profile;
     }
+  } else if (command === 'bake') {
+    count(1);
+    const { bakeAsset } = await import('../server/derived.ts');
+    result = await bakeAsset(
+      args[0],
+      required('id'),
+      await jsonInput(required('json')),
+      value('revision') || undefined,
+      !!v.write,
+    );
   } else if (command === 'revisions') {
     count(1);
     await getAsset(args[0]);

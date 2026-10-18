@@ -547,6 +547,23 @@ function DetailView({
             current={currentAsset.profile}
             compare={readOnly}
           />
+          {a.schema === 2 && (
+            <section className="render-profile" aria-label="派生元と検証">
+              <h3>統合した派生アセット</h3>
+              <p>
+                <a href={'?asset=' + encodeURIComponent(a.derivedFrom.id)}>
+                  正本を開く：{a.derivedFrom.id}
+                </a>{' '}
+                · 入力版 {a.derivedFrom.revision.slice(0, 12)}
+              </p>
+              <a href={`/api/assets/${a.id}/derivation?revision=${a.revision}`} download>
+                レシピと検証結果を取得
+              </a>
+              <p className="subtle">
+                正本の部位別検査の代用にはなりません。限定した視点の比較は全環境での見た目・スケール・ゲーム組込みを保証しません。
+              </p>
+            </section>
+          )}
         </section>
         <aside className="inspector">
           <div className="inspector-tabs">

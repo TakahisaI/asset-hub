@@ -61,6 +61,29 @@ Principled BSDFのベースカラー・粗さ・金属度・法線（凹凸）�
 
 質感は開始フレームで固定します。プロシージャルなボリューム・透過・材質アニメーションのベイクは対象外です。リグ付きメッシュの質感ベイク、動きのある・入れ子のコレクションインスタンスは制作側で処理してください。動く部品のノードと埋め込みクリップは保持します。Blender 5.2で検証しています。
 
+### 統合した派生アセットの登録
+
+正本の固定版から、指定した剛体グループを材質・頂点属性構成ごとに統合し、別IDへ登録できます。`inspect` でノード番号を確認し、`groups.json` に固定部品だけを指定します。グループのrootから対象までに埋め込みアニメーションや動作設定の可動部があれば拒否します。制作側独自の制御は自動判定できないため、対象から外してください。
+
+```json
+{ "groups": [{ "rootNode": 0, "nodes": [1, 2] }] }
+```
+
+```sh
+npm run -s assetctl -- schema bake
+npm run -s assetctl -- bake ship.original --id ship.merged --json groups.json --revision '<入力GLBのSHA-256>'
+# 検証後、正本と別IDに登録
+npm run -s assetctl -- bake ship.original --id ship.merged --json groups.json --revision '<入力GLBのSHA-256>' --write
+```
+
+`--write` を省略すると生成・検証だけを行い、台帳・保存形状・レシピを書き込みません。検証用のブラウザにはChrome（macOS）または `npx playwright install chromium` が必要です。`CHROMIUM_EXECUTABLE` で実行ファイルを指定できます。出力3回のSHA-256一致、仕様検証、三角形数・画像容量の保持、全クリップのキー時刻と区間中点・全プリセットでの8視点×PBR/法線/ワイヤーフレーム比較を通過すると登録します。入力・生成器・環境・閾値を固定したレシピと前後計測・比較PNGを `catalog/recipes/` に保存します。
+
+画像の既定値は最大チャンネル差2・変更画素率0.1%以下です。座標の丸めや線画の画素被覆による差も失敗になる場合があります。比較画像と数値誤差を確認して条件を変える場合は、入力JSONの `checks.imageMaxChannelError`（0〜255）と `checks.imageMaxChangedPixelRatio`（0超〜0.001の正規化済み小数文字列）に明記してください。閾値変更は別レシピとして保存し、既存の派生IDを上書きしません。
+
+派生は `schema: 2` の `derivedFrom` に正本ID・入力版・レシピを保持します。既存のschema 1は変換しません。正本・元リポジトリ・過去メモを保持し、同じ派生の再実行でも編集済みメタデータ・メモを保持します。別の入力やレシピには新IDを使います。派生への `replace` は拒否するので、手編集した場合は別IDで通常登録し、`source.scope` に元の派生ID・版と編集内容を記録してください。詳細画面から来歴と検証結果を取得でき、lock/syncには同じ来歴JSONを同梱します。
+
+初版は単一シーン・FLOAT頂点属性の三角形が対象で、skinning・morph・GPU instancing・透過・VFX・未知の属性や拡張を含む指定は拒否します。三角形削減やテクスチャ再ベイクは行いません。元のBINを保持するためGLBサイズは増える場合があります。限定した視点の比較は全環境の見た目・正しいスケール・ゲーム組込みや正本の部位別検査を保証しません。[設計と保存契約](docs/derived-assets.md)を参照してください。
+
 ## 動作とモーション
 
 ### Three.js向けVFX

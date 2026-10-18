@@ -148,6 +148,13 @@ export async function registerAsset(
       throw Object.assign(new Error('別の操作で更新されました。取得し直してください'), {
         status: 409,
       });
+    if (
+      prev?.schema === 2 &&
+      (asset.schema !== 2 ||
+        asset.revision !== prev.revision ||
+        JSON.stringify(asset.derivedFrom) !== JSON.stringify(prev.derivedFrom))
+    )
+      throw new Error('派生アセットの版・来歴は変更できません。別IDで登録してください');
     if (prev) {
       asset.name = prev.name;
       asset.description = prev.description;
@@ -171,6 +178,13 @@ export async function registerAsset(
       if (fixed.id !== asset.id || fixed.revision !== asset.revision)
         throw new Error('固定版のIDまたはハッシュが一致しません');
       // Discovery/inspection changes are import events; fixed revision fields stay immutable.
+      if (
+        asset.schema !== fixed.schema ||
+        (fixed.schema === 2 &&
+          (asset.schema !== 2 ||
+            JSON.stringify(asset.derivedFrom) !== JSON.stringify(fixed.derivedFrom)))
+      )
+        throw new Error('固定版の派生来歴が一致しません');
       for (const key of ['source', 'file', 'metrics', 'qa', 'importWarnings', 'vfx'] as const)
         Object.assign(asset, { [key]: fixed[key] });
     } else await atomicJson(snapshot, asset);

@@ -554,6 +554,8 @@ try {
   assert.ok(duration > 0);
   assert.deepEqual(shaderErrors, []);
   assert.deepEqual(errors, []);
+  const { testBakeRegistration } = await import('./bake-browser.ts');
+  await testBakeRegistration(base, page, temp);
   console.log(
     'Browser PASS: 3D load, modes, metadata/collections, notes/camera, revision history/drafts/behavior isolation, pinned downloads/upload, modal focus, search, mobile layout, deferred model, partial catalog failure, VFX volume shader/seek, source/runtime downloads and reference video.',
   );

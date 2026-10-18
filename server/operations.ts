@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   assetSchema,
+  assetRecordSchema,
   editSchema,
   noteInput,
   behaviorSchema,
@@ -68,7 +69,7 @@ export const importInput = editSchema
   .extend({
     id: idSchema,
     kind: z.enum(['model', 'motion']).optional(),
-    source: assetSchema.shape.source.optional(),
+    source: assetRecordSchema.shape.source.optional(),
     download: downloadSchema.optional(),
   })
   .strict();
@@ -88,6 +89,10 @@ export async function importGlb(
         status: 400,
       });
     const previous = (await exists(assetPath(input.id))) ? await getAsset(input.id) : null;
+    if (previous?.schema === 2)
+      throw new Error(
+        '派生アセットは通常のreplaceで変更できません。手編集は別IDで登録してください',
+      );
     if (previous && expected === undefined)
       throw Object.assign(new Error('このIDは登録済みです。replaceで新版を登録してください'), {
         status: 409,

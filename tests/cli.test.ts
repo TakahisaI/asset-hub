@@ -176,6 +176,8 @@ test('CLI motion bindings pin source versions; lock/sync include behavior, old s
     before,
   );
   assert.equal((await cli('schema', 'behavior')).type, 'object');
+  assert.equal((await cli('schema', 'bake')).type, 'object');
+  assert.equal((await cli('schema', 'recipe')).type, 'object');
 });
 
 test('CLI and HTTP compete on the same compare-and-swap lock', async () => {

@@ -20,6 +20,7 @@ import { inspectStorage } from '../tools/storage.ts';
 import { getCatalog } from './catalog.ts';
 import { createLock } from '../tools/assetctl.ts';
 import { getProfile } from './profiles.ts';
+import { getDerivation } from './recipes.ts';
 import {
   root,
   storeDir,
@@ -123,6 +124,13 @@ export function createApp() {
     res.json(await inspectAsset(req.params.id)),
   );
   app.get('/api/behaviors/:hash', async (req, res) => res.json(await getBehavior(req.params.hash)));
+  app.get('/api/assets/:id/derivation', async (req, res) => {
+    const asset = req.query.revision
+      ? await getRevision(req.params.id, hashSchema.parse(req.query.revision))
+      : await getAsset(req.params.id);
+    if (asset.schema !== 2) return res.status(404).json({ error: '派生アセットではありません' });
+    res.attachment(asset.id + '.derivation.json').json(await getDerivation(asset));
+  });
   app.put('/api/assets/:id/behavior', async (req, res) =>
     res.json(await setBehavior(req.params.id, req.body, String(req.headers['if-match'] ?? ''))),
   );
