@@ -2,7 +2,7 @@ import type { RenderProfile } from './render-profile-schema.ts';
 import { fmt, mb } from './ui.ts';
 
 type Profile = RenderProfile | null | undefined;
-const profileBytes = (value: number) => (value < 1000 ? `${fmt(value)} B` : mb(value));
+export const profileBytes = (value: number) => (value < 1000 ? `${fmt(value)} B` : mb(value));
 
 export function ProfileSummary({ profile, error }: { profile: Profile; error?: string }) {
   return profile ? (

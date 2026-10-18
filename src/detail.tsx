@@ -30,6 +30,7 @@ import { fmt, mb, api, saveFile } from './ui.ts';
 import { useAssetNotes, NotesPanel } from './notes.tsx';
 import { QualityCheck } from './quality-check.tsx';
 import { ProfilePanel } from './render-profile.tsx';
+import { compareUrl } from './compare.tsx';
 type DetailProps = {
   asset: CatalogAsset;
   onBack: () => void;
@@ -341,6 +342,9 @@ function DetailView({
         </div>
       </div>
       {history}
+      <a className="text-link" href={compareUrl({ id: a.id, revision: a.revision })}>
+        別アセットと比較
+      </a>
       {a.vfx && (
         <p className="snapshot-note">
           <strong>Three.js VFX</strong>
@@ -559,6 +563,16 @@ function DetailView({
               <a href={`/api/assets/${a.id}/derivation?revision=${a.revision}`} download>
                 レシピと検証結果を取得
               </a>
+              <p>
+                <a
+                  href={compareUrl(
+                    { id: a.derivedFrom.id, revision: a.derivedFrom.revision },
+                    { id: a.id, revision: a.revision },
+                  )}
+                >
+                  正本の固定版と比較
+                </a>
+              </p>
               <p className="subtle">
                 正本の部位別検査の代用にはなりません。限定した視点の比較は全環境での見た目・スケール・ゲーム組込みを保証しません。
               </p>
