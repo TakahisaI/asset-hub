@@ -3,6 +3,8 @@ import type { Asset, CatalogAsset } from './schema.ts';
 import type { CompareViewer } from './compare-viewer.ts';
 import { api, fmt, saveFile } from './ui.ts';
 import { ProfileSummary, profileBytes } from './render-profile.tsx';
+import { Modal } from './modal.tsx';
+import { readComparisonSettings, type ComparisonSettings } from './comparison-settings.ts';
 
 export type ComparedRevision = Asset & Pick<CatalogAsset, 'available' | 'profile' | 'profileError'>;
 type Selection = { id: string; revision: string };
@@ -40,6 +42,13 @@ function useRevisions(id: string) {
 }
 
 export function Compare({ assets, onBack }: { assets: CatalogAsset[]; onBack: () => void }) {
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restored, setRestored] = useState<{
+    sequence: number;
+    settings: ComparisonSettings;
+    left: ComparedRevision;
+    right: ComparedRevision;
+  }>();
   const params = new URLSearchParams(location.search);
   const [left, setLeft] = useState<Selection>({
     id: params.get('left') ?? '',
@@ -65,8 +74,18 @@ export function Compare({ assets, onBack }: { assets: CatalogAsset[]; onBack: ()
         revision: assets.find((x) => x.id === right.id)?.revision ?? b.items[0].revision,
       });
   }, [right, b.items, assets]);
-  const leftAsset = a.items.find((x) => x.id === left.id && x.revision === left.revision);
-  const rightAsset = b.items.find((x) => x.id === right.id && x.revision === right.revision);
+  const matching = (asset: ComparedRevision | undefined, selection: Selection) =>
+    asset?.id === selection.id && asset.revision === selection.revision;
+  const leftAsset = matching(restored?.left, left)
+    ? restored!.left
+    : a.items.find((x) => x.id === left.id && x.revision === left.revision);
+  const rightAsset = matching(restored?.right, right)
+    ? restored!.right
+    : b.items.find((x) => x.id === right.id && x.revision === right.revision);
+  const settings =
+    matching(restored?.left, left) && matching(restored?.right, right)
+      ? restored?.settings
+      : undefined;
   useEffect(() => {
     if (leftAsset && rightAsset) history.replaceState({}, '', compareUrl(left, right));
   }, [leftAsset, rightAsset, left, right]);
@@ -82,6 +101,25 @@ export function Compare({ assets, onBack }: { assets: CatalogAsset[]; onBack: ()
         </div>
       </div>
       <p>2つの固定版を選び、同じカメラ・照明・表示寸法で切り替えて比較します。</p>
+      <button className="secondary" onClick={() => setRestoreOpen(true)}>
+        比較条件を読み込む
+      </button>
+      {restoreOpen && (
+        <RestoreComparison
+          onClose={() => setRestoreOpen(false)}
+          onRestore={(value, l, r) => {
+            setRestored((previous) => ({
+              sequence: (previous?.sequence ?? 0) + 1,
+              settings: value,
+              left: l,
+              right: r,
+            }));
+            setLeft(value.left);
+            setRight(value.right);
+            setRestoreOpen(false);
+          }}
+        />
+      )}
       <div className="compare-selectors">
         {[
           { label: 'A', value: left, set: setLeft, state: a },
@@ -146,13 +184,120 @@ export function Compare({ assets, onBack }: { assets: CatalogAsset[]; onBack: ()
         <>
           <ComparisonProfiles left={leftAsset} right={rightAsset} />
           <ComparePreview
-            key={[left.id, left.revision, right.id, right.revision].join(':')}
+            key={[
+              left.id,
+              left.revision,
+              right.id,
+              right.revision,
+              settings ? restored!.sequence : '',
+            ].join(':')}
             left={leftAsset}
             right={rightAsset}
+            settings={settings}
           />
         </>
       )}
     </div>
+  );
+}
+
+function RestoreComparison({
+  onClose,
+  onRestore,
+}: {
+  onClose: () => void;
+  onRestore: (
+    settings: ComparisonSettings,
+    left: ComparedRevision,
+    right: ComparedRevision,
+  ) => void;
+}) {
+  const [text, setText] = useState(''),
+    [error, setError] = useState(''),
+    [busy, setBusy] = useState(false);
+  const cancelled = useRef(false);
+  useEffect(
+    () => () => {
+      cancelled.current = true;
+    },
+    [],
+  );
+  async function restore() {
+    setError('');
+    setBusy(true);
+    try {
+      const settings = readComparisonSettings(text);
+      const pair = await Promise.all(
+        [settings.left, settings.right].map(async (ref, i) => {
+          const label = i === 0 ? 'A' : 'B';
+          let versions: ComparedRevision[];
+          try {
+            versions = await api(`/api/assets/${encodeURIComponent(ref.id)}/revisions`);
+          } catch (e) {
+            throw new Error(`${label}のIDを読み込めません: ${(e as Error).message}`);
+          }
+          const asset = versions.find((v) => v.id === ref.id && v.revision === ref.revision);
+          if (!asset) throw new Error(`${label}の指定版が見つかりません。`);
+          if (!asset.available) throw new Error(`${label}のGLBを復元してから読み込んでください。`);
+          if (asset.vfx || asset.kind === 'motion' || !asset.metrics.meshes)
+            throw new Error(`${label}は静止モデル比較の対象外です。`);
+          return asset;
+        }),
+      );
+      if (!cancelled.current) onRestore(settings, pair[0], pair[1]);
+    } catch (e) {
+      if (!cancelled.current) setError((e as Error).message);
+    } finally {
+      if (!cancelled.current) setBusy(false);
+    }
+  }
+  return (
+    <Modal label="比較条件を読み込む" onClose={onClose}>
+      <h2>比較条件を読み込む</h2>
+      <p>保存したJSONファイルを選ぶか、コピーした比較条件を貼り付けてください。</p>
+      <label>
+        比較JSONファイル
+        <input
+          type="file"
+          accept="application/json,.json"
+          disabled={busy}
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            try {
+              if (file.size > 1e6) throw new Error('比較JSONは1MB以下にしてください。');
+              setText(await file.text());
+              setError('');
+            } catch (e) {
+              setError((e as Error).message);
+            }
+          }}
+        />
+      </label>
+      <label>
+        比較JSON
+        <textarea
+          aria-label="比較JSON"
+          rows={10}
+          value={text}
+          disabled={busy}
+          onChange={(e) => setText(e.target.value)}
+        />
+      </label>
+      {error && (
+        <p role="alert" className="form-error">
+          {error}
+        </p>
+      )}
+      <div className="compare-controls">
+        <button className="secondary" onClick={onClose}>
+          閉じる
+        </button>
+        <button className="primary" disabled={busy || !text.trim()} onClick={() => void restore()}>
+          {busy ? '確認中…' : '比較条件を復元'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -253,17 +398,26 @@ export function ComparisonProfiles({
   );
 }
 
-function ComparePreview({ left, right }: { left: ComparedRevision; right: ComparedRevision }) {
+function ComparePreview({
+  left,
+  right,
+  settings,
+}: {
+  left: ComparedRevision;
+  right: ComparedRevision;
+  settings?: ComparisonSettings;
+}) {
   const host = useRef<HTMLDivElement>(null),
     viewer = useRef<CompareViewer | null>(null);
-  const [requested, setRequested] = useState(false),
+  const [requested, setRequested] = useState(!!settings),
     [ready, setReady] = useState(false),
     [error, setError] = useState('');
-  const [side, setSide] = useState(0),
-    [mode, setMode] = useState('pbr'),
-    [lighting, setLighting] = useState('studio'),
-    [grid, setGrid] = useState(true),
+  const [side, setSide] = useState(settings?.displayed === 'B' ? 1 : 0),
+    [mode, setMode] = useState<string>(settings?.mode ?? 'pbr'),
+    [lighting, setLighting] = useState<string>(settings?.lighting ?? 'studio'),
+    [grid, setGrid] = useState(settings?.grid ?? true),
     [message, setMessage] = useState('');
+  const [dimensionWarning, setDimensionWarning] = useState('');
   const supported = [left, right].every(
     (a) => !a.vfx && a.kind !== 'motion' && a.metrics.meshes > 0,
   );
@@ -277,7 +431,26 @@ function ComparePreview({ left, right }: { left: ComparedRevision; right: Compar
         v = new CompareViewer(host.current!);
         viewer.current = v;
         await v.loadPair('/api/files/' + left.revision, '/api/files/' + right.revision);
-        if (!cancelled) setReady(true);
+        if (!cancelled) {
+          if (settings) {
+            v.restoreConditions(settings);
+            const check = () => {
+              const actual = v!.conditions().viewport,
+                saved = settings.viewport;
+              const mismatch = Object.keys(saved).some(
+                (key) => actual[key as keyof typeof actual] !== saved[key as keyof typeof saved],
+              );
+              setDimensionWarning(
+                mismatch
+                  ? `保存時と同じ表示寸法を再現できていません（保存時 ${saved.width}×${saved.height} / 描画 ${saved.bufferWidth}×${saved.bufferHeight}、現在 ${actual.width}×${actual.height} / 描画 ${actual.bufferWidth}×${actual.bufferHeight}）。保存した投影を保持し、自動フィットは行いません。`
+                  : '',
+              );
+            };
+            v.onResize = check;
+            check();
+          }
+          setReady(true);
+        }
       })
       .catch((e) => {
         if (!cancelled) setError(e.message);
@@ -287,7 +460,7 @@ function ComparePreview({ left, right }: { left: ComparedRevision; right: Compar
       v?.dispose();
       viewer.current = null;
     };
-  }, [requested, left.revision, right.revision]);
+  }, [requested, left.revision, right.revision, settings]);
   function conditions() {
     return {
       schema: 1,
@@ -411,6 +584,12 @@ function ComparePreview({ left, right }: { left: ComparedRevision; right: Compar
         </button>
       </div>
       {message && <p role="status">{message}</p>}
+      {ready && settings && <p role="status">保存した比較条件を復元しました。</p>}
+      {dimensionWarning && (
+        <p role="status" className="form-error">
+          {dimensionWarning}
+        </p>
+      )}
       <p className="subtle">
         最初のカメラはAを基準にします。ドラッグ・ズーム後も、切替時に自動フィットや位置合わせを行いません。縮尺・位置・隙間の差をそのまま表示します。読み込み後に表示幅を変えた場合は、変更後の描画寸法を条件に記録します。
       </p>

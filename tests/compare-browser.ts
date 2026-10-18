@@ -92,6 +92,7 @@ export async function testComparison(base: string, page: Page, temp: string) {
   const imageA = await pixels();
   await page.getByRole('button', { name: 'Bを表示：比較B', exact: true }).click();
   const b = await conditions();
+  const imageB = await pixels();
   assert.equal(b.displayed, 'B');
   for (const key of [
     'camera',
@@ -117,6 +118,75 @@ export async function testComparison(base: string, page: Page, temp: string) {
   const copied = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
   assert.deepEqual(copied.camera, a.camera);
   assert.deepEqual(copied.right, { id: right.id, revision: right.revision });
+  async function restore(saved: unknown, file = false) {
+    await page.getByRole('button', { name: '比較条件を読み込む', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '比較条件を読み込む', exact: true });
+    if (file)
+      await dialog.getByLabel('比較JSONファイル', { exact: true }).setInputFiles({
+        name: 'comparison.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify(saved)),
+      });
+    else await dialog.getByLabel('比較JSON', { exact: true }).fill(JSON.stringify(saved));
+    await dialog.getByRole('button', { name: '比較条件を復元', exact: true }).click();
+    return dialog;
+  }
+  function sameCamera(actual: typeof b.camera, expected: typeof b.camera) {
+    for (const key of ['position', 'target', 'up'])
+      actual[key].forEach((n: number, i: number) =>
+        assert(Math.abs(n - expected[key][i]) < 1e-10, key),
+      );
+    for (const key of ['fov', 'near', 'far', 'aspect'])
+      assert.equal(actual[key], expected[key], key);
+  }
+  await page.goto(base + '?compare=1');
+  await restore(b, true);
+  await page.getByText('保存した比較条件を復元しました。', { exact: true }).waitFor();
+  const restored = await conditions();
+  sameCamera(restored.camera, b.camera);
+  for (const key of [
+    'left',
+    'right',
+    'displayed',
+    'mode',
+    'lighting',
+    'grid',
+    'viewport',
+    'background',
+    'toneMapping',
+    'exposure',
+  ])
+    assert.deepEqual(restored[key], b[key], key);
+  assert.deepEqual(await pixels(), imageB);
+  assert.equal(new URL(page.url()).searchParams.get('leftRevision'), left.revision);
+  for (const invalid of [
+    { ...b, schema: 99 },
+    { ...b, camera: { ...b.camera, near: -1 } },
+    { ...b, left: { id: 'missing.asset', revision: left.revision } },
+    { ...b, right: { ...b.right, revision: 'f'.repeat(64) } },
+  ]) {
+    const dialog = await restore(invalid);
+    await dialog.getByRole('alert').waitFor();
+    await dialog.getByRole('button', { name: '閉じる', exact: true }).click();
+    sameCamera((await conditions()).camera, b.camera);
+    assert.deepEqual(await pixels(), imageB);
+  }
+  await page.getByLabel('比較の表示モード', { exact: true }).selectOption('wireframe');
+  await restore(b);
+  await page.getByText('保存した比較条件を復元しました。', { exact: true }).waitFor();
+  assert.equal((await conditions()).mode, b.mode);
+  assert.deepEqual(await pixels(), imageB);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await restore(b);
+  await page.getByText(/保存時と同じ表示寸法を再現できていません/).waitFor();
+  const differentSize = await conditions();
+  sameCamera(differentSize.camera, b.camera);
+  assert.notEqual(differentSize.viewport.width, b.viewport.width);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByText(/保存時と同じ表示寸法を再現できていません/).waitFor({ state: 'hidden' });
+  sameCamera((await conditions()).camera, b.camera);
+  await page.getByRole('button', { name: /^Aを表示：/ }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   const mobile = await conditions();
   assert.deepEqual(mobile.camera.position, a.camera.position);
