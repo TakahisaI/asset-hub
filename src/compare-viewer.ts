@@ -23,7 +23,8 @@ export class CompareViewer extends AssetViewer {
     this.playback?.reset();
     for (const model of [this.model!, this.other])
       model.traverse((object) => {
-        if (object instanceof Light) object.intensity = 0;
+        // Exclude the lamp itself without hiding meshes parented to it.
+        if (object instanceof Light) object.layers.disableAll();
       });
     this.controls.enableDamping = false;
     this.camera.near = Math.max(...this.size.toArray(), 0.1) / 200;

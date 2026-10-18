@@ -54,6 +54,20 @@ export async function testComparison(base: string, page: Page, temp: string) {
   assert.equal(await page.locator('.compare-viewport canvas').count(), 0);
   await page.getByRole('button', { name: '2つの3Dモデルを読み込む', exact: true }).click();
   const canvas = page.locator('.compare-viewport canvas');
+  const pixels = () =>
+    canvas.evaluate(async (element) => {
+      const canvas = element as HTMLCanvasElement;
+      const gl = canvas.getContext('webgl2')!;
+      const data = new Uint8Array(canvas.width * canvas.height * 4);
+      gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
+      return {
+        width: canvas.width,
+        height: canvas.height,
+        sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)))
+          .map((n) => n.toString(16).padStart(2, '0'))
+          .join(''),
+      };
+    });
   async function conditions() {
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: '比較条件を保存', exact: true }).click();
@@ -75,7 +89,7 @@ export async function testComparison(base: string, page: Page, temp: string) {
   await page.getByLabel('グリッド', { exact: true }).uncheck();
   const a = await conditions();
   assert.notDeepEqual(a.camera.position, initial.camera.position);
-  const imageA = await canvas.screenshot();
+  const imageA = await pixels();
   await page.getByRole('button', { name: 'Bを表示：比較B', exact: true }).click();
   const b = await conditions();
   assert.equal(b.displayed, 'B');
@@ -91,12 +105,12 @@ export async function testComparison(base: string, page: Page, temp: string) {
   ])
     assert.deepEqual(b[key], a[key], key);
   assert.notDeepEqual(
-    await canvas.screenshot(),
+    await pixels(),
     imageA,
     'Different scale/position must not be hidden by per-model fitting',
   );
   await page.getByRole('button', { name: /^Aを表示：/ }).click();
-  assert.deepEqual(await canvas.screenshot(), imageA);
+  assert.deepEqual(await pixels(), imageA);
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('button', { name: '比較条件をコピー', exact: true }).click();
   await page.getByText('比較条件をコピーしました', { exact: true }).waitFor();
@@ -115,20 +129,20 @@ export async function testComparison(base: string, page: Page, temp: string) {
   await page.getByRole('button', { name: '2つの3Dモデルを読み込む', exact: true }).click();
   const unlit = await conditions();
   assert.equal(unlit.embeddedLights, false);
-  const sharedLighting = await canvas.screenshot();
+  const sharedLighting = await pixels();
   await page.getByRole('button', { name: 'Bを表示：内蔵照明モデル', exact: true }).click();
   assert.deepEqual(
-    await canvas.screenshot(),
+    await pixels(),
     sharedLighting,
     'Embedded lights must not change the common illumination',
   );
   await page.goto(base + compareUrl(lit, left));
   await page.getByRole('button', { name: '2つの3Dモデルを読み込む', exact: true }).click();
   await conditions();
-  const reversed = await canvas.screenshot();
+  const reversed = await pixels();
   await page.getByRole('button', { name: /^Bを表示：/ }).click();
   assert.deepEqual(
-    await canvas.screenshot(),
+    await pixels(),
     reversed,
     'Light nodes on either side must retain their child geometry',
   );
