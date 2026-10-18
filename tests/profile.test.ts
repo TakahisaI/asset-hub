@@ -1,10 +1,12 @@
-import { profiledGlb, rawGlb } from './fixtures.ts';
+import { profiledGlb, rawGlb, triangleGlb } from './fixtures.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import { profileGlb, imageSize } from '../tools/profile.ts';
+import { readGlb, readGlbBinary } from '../tools/glb.ts';
 import { renderProfileSchema } from '../src/render-profile-schema.ts';
 const bytes = profiledGlb();
 const profile = profileGlb(bytes, '2026-01-01T00:00:00.000Z');
@@ -80,6 +82,39 @@ const triangleGltf = (extra: Record<string, unknown>) => ({
   accessors: triangleAccessors,
   ...extra,
 });
+test('GPU instances multiply drawn triangles without multiplying draw calls or geometry', () => {
+  const bin = Buffer.concat([triangleBin(), Buffer.alloc(2), floats(TRI)]);
+  const instanced = profileGlb(
+    rawGlb(
+      triangleGltf({
+        extensionsUsed: ['EXT_mesh_gpu_instancing'],
+        extensionsRequired: ['EXT_mesh_gpu_instancing'],
+        nodes: [
+          { mesh: 0, extensions: { EXT_mesh_gpu_instancing: { attributes: { TRANSLATION: 2 } } } },
+        ],
+        buffers: [{ byteLength: bin.length }],
+        bufferViews: [
+          { buffer: 0, byteOffset: 0, byteLength: 36 },
+          { buffer: 0, byteOffset: 36, byteLength: 6 },
+          { buffer: 0, byteOffset: 44, byteLength: 36 },
+        ],
+        accessors: [
+          ...triangleAccessors,
+          { bufferView: 2, componentType: 5126, count: 3, type: 'VEC3' },
+        ],
+      }),
+      bin,
+    ),
+  );
+  assert.equal(instanced.scene.meshInstances, 3);
+  assert.equal(instanced.scene.drawCalls, 1);
+  assert.equal(instanced.geometry.triangles, 1);
+  assert.equal(instanced.geometry.trianglesDrawn, 3);
+  assert.equal(instanced.geometry.vertexBytes, 36);
+  assert.equal(instanced.geometry.indexBytes, 6);
+  assert.equal(instanced.byMaterial[0].drawCalls, 1);
+  assert.equal(instanced.byMaterial[0].triangles, 3);
+});
 test('a model with 257 materials is measured instead of rejected', () => {
   const materials = Array.from({ length: 257 }, (_, index) => ({ name: `m${index}` }));
   const primitives = materials.map((_, index) => ({
@@ -100,34 +135,84 @@ test('a model with 257 materials is measured instead of rejected', () => {
   assert.equal(many.scene.drawCalls, 257);
   assert.equal(renderProfileSchema.safeParse(many).success, true);
 });
-test('images embedded as data URIs are measured like bufferView images', () => {
-  const png =
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-  const embedded = profileGlb(
-    rawGlb(
-      triangleGltf({
-        images: [{ uri: `data:image/png;base64,${png}` }],
-        textures: [{ source: 0 }],
-      }),
-      triangleBin(),
-    ),
-  );
-  assert.equal(embedded.textures.count, 1);
-  assert.equal(embedded.textures.maxEdge, 1);
-  assert.equal(embedded.textures.decodedBytes, 4);
-  assert.equal(embedded.textures.items[0].mimeType, 'image/png');
-  assert.ok(embedded.textures.items[0].bytes > 0);
-});
+const png = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+);
+for (const [encoding, encode] of Object.entries({
+  base64: (data: Buffer) => `;base64,${data.toString('base64')}`,
+  'percent-encoded base64': (data: Buffer) =>
+    `;base64,${encodeURIComponent(data.toString('base64'))}`,
+  'percent-encoded bytes': (data: Buffer) =>
+    `,${[...data].map((byte) => `%${byte.toString(16).padStart(2, '0')}`).join('')}`,
+})) {
+  test(`images embedded as ${encoding} data URIs are measured like bufferView images`, () => {
+    const embedded = profileGlb(
+      rawGlb(
+        triangleGltf({
+          images: [{ uri: `data:image/png${encode(png)}` }],
+          textures: [{ source: 0 }],
+        }),
+        triangleBin(),
+      ),
+    );
+    assert.equal(embedded.textures.count, 1);
+    assert.equal(embedded.textures.maxEdge, 1);
+    assert.equal(embedded.textures.decodedBytes, 4);
+    assert.equal(embedded.textures.items[0].mimeType, 'image/png');
+    assert.equal(embedded.textures.bytes, png.length);
+    assert.deepEqual(embedded.textures.items[0], {
+      mimeType: 'image/png',
+      bytes: png.length,
+      width: 1,
+      height: 1,
+    });
+  });
+  test(`bufferView images resolve their ${encoding} data URI buffer and byte offset`, () => {
+    const bin = Buffer.concat([triangleBin(), Buffer.alloc(2)]);
+    const imageBuffer = Buffer.concat([Buffer.alloc(4), png, Buffer.alloc(2)]);
+    const embedded = profileGlb(
+      rawGlb(
+        triangleGltf({
+          buffers: [
+            { byteLength: bin.length },
+            {
+              byteLength: imageBuffer.length,
+              uri: `data:application/octet-stream${encode(imageBuffer)}`,
+            },
+          ],
+          bufferViews: [
+            { buffer: 0, byteOffset: 0, byteLength: 36 },
+            { buffer: 0, byteOffset: 36, byteLength: 6 },
+            { buffer: 1, byteOffset: 4, byteLength: png.length },
+          ],
+          images: [{ mimeType: 'image/png', bufferView: 2 }],
+          textures: [{ source: 0 }],
+        }),
+        bin,
+      ),
+    );
+    assert.equal(embedded.textures.bytes, png.length);
+    assert.equal(embedded.textures.decodedBytes, 4);
+    assert.equal(embedded.textures.maxEdge, 1);
+    assert.deepEqual(embedded.textures.items[0], {
+      mimeType: 'image/png',
+      bytes: png.length,
+      width: 1,
+      height: 1,
+    });
+  });
+}
 test('a JPEG thumbnail in Exif is not mistaken for the image', () => {
   const thumbnail = Buffer.from([
-    0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11,
-    0x01, 0x03, 0x11, 0x01,
+    0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01,
+    0x03, 0x11, 0x01,
   ]);
   const app1 = Buffer.concat([Buffer.from([0xff, 0xe1, 0x00, 0x00]), thumbnail, Buffer.alloc(20)]);
   app1.writeUInt16BE(app1.length - 2, 2);
   const frame = Buffer.from([
-    0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x90, 0x01, 0x90, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11,
-    0x01, 0x03, 0x11, 0x01,
+    0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x90, 0x01, 0x90, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01,
+    0x03, 0x11, 0x01,
   ]);
   const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8]), app1, frame, Buffer.from([0xff, 0xd9])]);
   assert.deepEqual(imageSize(jpeg), { width: 400, height: 400 });
@@ -138,9 +223,7 @@ test('morph target vertex data counts toward vertex bytes', () => {
       triangleGltf({
         meshes: [
           {
-            primitives: [
-              { attributes: { POSITION: 0 }, targets: [{ POSITION: 2 }], indices: 1 },
-            ],
+            primitives: [{ attributes: { POSITION: 0 }, targets: [{ POSITION: 2 }], indices: 1 }],
           },
         ],
         bufferViews: [
@@ -213,7 +296,38 @@ test('a tangent accessor shared by several primitives is counted once', () => {
   );
   assert.equal(used.attributes.tangentBytesUnused, 0);
 });
-test('profiles are stored by GLB hash and leave the fixed revision untouched', async () => {
+for (const { name, extensions, unused } of [
+  {
+    name: 'clearcoat normal maps',
+    extensions: {
+      KHR_materials_clearcoat: { clearcoatFactor: 1, clearcoatNormalTexture: { index: 0 } },
+    },
+    unused: 0,
+  },
+  {
+    name: 'anisotropic materials',
+    extensions: { KHR_materials_anisotropy: { anisotropyStrength: 1 } },
+    unused: 0,
+  },
+  {
+    name: 'disabled anisotropy',
+    extensions: { KHR_materials_anisotropy: { anisotropyStrength: 0 } },
+    unused: 48,
+  },
+]) {
+  test(`tangent usage accounts for ${name}`, () => {
+    const gltf = readGlb(bytes);
+    Object.assign(gltf.meshes![0].primitives[1].attributes, { NORMAL: 1, TEXCOORD_0: 2 });
+    const measured = profileGlb(
+      rawGlb(
+        { ...gltf, extensionsUsed: Object.keys(extensions), materials: [{}, { extensions }] },
+        readGlbBinary(bytes),
+      ),
+    );
+    assert.equal(measured.attributes.tangentBytesUnused, unused);
+  });
+}
+test('profiles are stored by GLB hash and leave the fixed revision untouched', async (t) => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-profile-'));
   process.env.ASSET_HUB_ROOT = temp;
   try {
@@ -235,6 +349,43 @@ test('profiles are stored by GLB hash and leave the fixed revision untouched', a
     assert.equal(stored?.scene.drawCalls, 4);
     // Measuring is a read of the library; the ledger must not gain a revision or a timestamp.
     assert.equal(await readFile(store.assetPath(asset.id), 'utf8'), ledger);
+    await t.test('bulk measurement pins revisions during concurrent reimports', async () => {
+      const old = await fixtureAsset(triangleGlb(), 'zz.target');
+      await store.putBlob(triangleGlb());
+      await store.registerAsset(old);
+      const replacement = await fixtureAsset(bytes, old.id);
+      let acquired!: () => void;
+      let replace!: () => void;
+      const ready = new Promise<void>((resolve) => {
+        acquired = resolve;
+      });
+      const proceed = new Promise<void>((resolve) => {
+        replace = resolve;
+      });
+      const replacing = store.withLibraryLock(async () => {
+        acquired();
+        await proceed;
+        await store.registerAsset(replacement);
+      });
+      await ready;
+      const pending = profiles.measureAll(true);
+      try {
+        // The first blob read has taken the catalog snapshot and is waiting for our lock.
+        const work = path.join(temp, '.cache/work');
+        for (let attempts = 0; !(await store.directoryEntries(work)).length; attempts++) {
+          assert.ok(attempts < 500, 'bulk measurement did not reach its first blob read');
+          await setTimeout(10);
+        }
+      } finally {
+        replace();
+        await replacing;
+        await pending;
+      }
+      const result = (await pending).find((entry) => entry.id === old.id);
+      assert.equal((await store.getAsset(old.id)).revision, replacement.revision);
+      assert.equal(result?.revision, old.revision);
+      assert.equal(result?.profile.glb.hash, old.revision);
+    });
   } finally {
     await rm(temp, { recursive: true, force: true });
   }

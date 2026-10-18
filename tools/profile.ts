@@ -68,13 +68,7 @@ function jpegSize(bytes: Uint8Array) {
     if (marker === 0xd9 || marker === 0xda) return undefined;
     const length = view.getUint16(offset + 2);
     if (length < 2) return undefined;
-    if (
-      marker >= 0xc0 &&
-      marker <= 0xcf &&
-      marker !== 0xc4 &&
-      marker !== 0xc8 &&
-      marker !== 0xcc
-    )
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
       return offset + 9 <= bytes.length
         ? { width: view.getUint16(offset + 7), height: view.getUint16(offset + 5) }
         : undefined;
@@ -95,15 +89,18 @@ export function imageSize(bytes: Uint8Array) {
     return { width: view.getUint32(16), height: view.getUint32(20) };
   return jpegSize(bytes);
 }
-// glTF allows images to be embedded either in the binary chunk or as a data URI.
-function dataUriImage(uri: string) {
+// glTF allows images and buffers to be embedded as data URIs.
+function readDataUri(uri: string) {
   const comma = uri.indexOf(',');
   if (!uri.startsWith('data:') || comma < 0) return undefined;
   const meta = uri.slice(5, comma);
-  if (!meta.endsWith(';base64')) return undefined;
+  // Percent escapes represent arbitrary octets, not necessarily UTF-8 text.
+  const data = uri
+    .slice(comma + 1)
+    .replace(/%([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
   return {
-    mimeType: meta.slice(0, Math.max(0, meta.indexOf(';'))),
-    bytes: Buffer.from(uri.slice(comma + 1), 'base64'),
+    mimeType: meta.split(';')[0],
+    bytes: Buffer.from(data, meta.endsWith(';base64') ? 'base64' : 'latin1'),
   };
 }
 export function profileGlb(
@@ -129,9 +126,13 @@ export function profileGlb(
     if (!node) return;
     const mesh = node.mesh === undefined ? undefined : meshes[node.mesh];
     if (mesh) {
-      meshInstances++;
+      const instanceAccessor = Object.values(
+        node.extensions?.EXT_mesh_gpu_instancing?.attributes ?? {},
+      )[0];
+      const instances = accessors[instanceAccessor]?.count ?? 1;
+      meshInstances += instances;
       for (const primitive of mesh.primitives ?? []) {
-        const triangles = triangleCount(primitive, accessors);
+        const triangles = triangleCount(primitive, accessors) * instances;
         drawCalls++;
         trianglesDrawn += triangles;
         const key = primitive.material ?? -1;
@@ -152,7 +153,7 @@ export function profileGlb(
   let primitivesWithSkin = 0;
   const vertexAccessors = new Set<number>();
   const indexAccessors = new Set<number>();
-  // A tangent accessor is only wasted when no primitive that uses it samples a normal map.
+  // Tangents serve normal maps and anisotropy, including material extensions.
   const tangentAccessors = new Set<number>();
   const tangentAccessorsUsed = new Set<number>();
   for (const mesh of meshes)
@@ -169,7 +170,13 @@ export function profileGlb(
         primitivesWithTangent++;
         const tangent = primitive.attributes.TANGENT;
         tangentAccessors.add(tangent);
-        if (materials[primitive.material ?? -1]?.normalTexture) tangentAccessorsUsed.add(tangent);
+        const material = materials[primitive.material ?? -1];
+        if (
+          material?.normalTexture ||
+          material?.extensions?.KHR_materials_clearcoat?.clearcoatNormalTexture ||
+          (material?.extensions?.KHR_materials_anisotropy?.anisotropyStrength ?? 0) > 0
+        )
+          tangentAccessorsUsed.add(tangent);
       }
       if (primitive.attributes.COLOR_0 !== undefined) primitivesWithColor++;
       if (primitive.attributes.JOINTS_0 !== undefined) primitivesWithSkin++;
@@ -178,12 +185,16 @@ export function profileGlb(
     .filter((index) => !tangentAccessorsUsed.has(index))
     .reduce((total, index) => total + accessorBytes(accessors[index]), 0);
   const binary = readGlbBinary(bytes);
+  const buffers = (gltf.buffers ?? []).map((buffer, index) =>
+    buffer.uri ? readDataUri(buffer.uri)?.bytes : index === 0 ? binary : undefined,
+  );
   const images = (gltf.images ?? []).map((image) => {
     const view = image.bufferView === undefined ? undefined : gltf.bufferViews?.[image.bufferView];
-    const embedded = image.uri ? dataUriImage(image.uri) : undefined;
+    const embedded = image.uri ? readDataUri(image.uri) : undefined;
+    const buffer = view ? buffers[view.buffer] : undefined;
     const data =
-      view && binary
-        ? binary.subarray(view.byteOffset ?? 0, (view.byteOffset ?? 0) + view.byteLength)
+      view && buffer
+        ? buffer.subarray(view.byteOffset ?? 0, (view.byteOffset ?? 0) + view.byteLength)
         : embedded?.bytes;
     const size = data ? imageSize(data) : undefined;
     return {

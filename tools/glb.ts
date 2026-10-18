@@ -12,7 +12,10 @@ export type Gltf = {
     translation?: number[];
     rotation?: number[];
     scale?: number[];
-    extensions?: { KHR_lights_punctual?: { light: number } };
+    extensions?: {
+      KHR_lights_punctual?: { light: number };
+      EXT_mesh_gpu_instancing?: { attributes: Record<string, number> };
+    };
   }[];
   animations?: {
     name?: string;
@@ -27,7 +30,7 @@ export type Gltf = {
     type?: string;
     bufferView?: number;
   }[];
-  bufferViews?: { byteLength: number; byteOffset?: number }[];
+  bufferViews?: { buffer: number; byteLength: number; byteOffset?: number }[];
   meshes?: {
     primitives: {
       attributes: Record<string, number>;
@@ -37,7 +40,15 @@ export type Gltf = {
       mode?: number;
     }[];
   }[];
-  materials?: { name?: string; doubleSided?: boolean; normalTexture?: unknown }[];
+  materials?: {
+    name?: string;
+    doubleSided?: boolean;
+    normalTexture?: unknown;
+    extensions?: {
+      KHR_materials_clearcoat?: { clearcoatNormalTexture?: unknown };
+      KHR_materials_anisotropy?: { anisotropyStrength?: number };
+    };
+  }[];
   images?: { name?: string; mimeType?: string; bufferView?: number; uri?: string }[];
   buffers?: { byteLength: number; uri?: string }[];
 };
@@ -55,7 +66,7 @@ export function readGlb(bytes: Uint8Array): Gltf {
     throw new Error('GLB JSONチャンクが壊れています');
   return JSON.parse(buf.toString('utf8', 20, 20 + length));
 }
-// Embedded images live in the binary chunk; measuring them needs the bytes, not the JSON.
+// The first buffer uses the BIN chunk when it has no URI.
 export function readGlbBinary(bytes: Uint8Array) {
   const buf = Buffer.from(bytes);
   let offset = 20 + buf.readUInt32LE(12);

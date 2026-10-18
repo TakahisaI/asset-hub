@@ -55,7 +55,7 @@ export async function measureAll(refresh = false) {
     results.push({
       id: asset.id,
       revision: asset.revision,
-      profile: await measureAsset(asset.id),
+      profile: await measureAsset(asset.id, asset.revision),
       reused: false,
     });
   }
