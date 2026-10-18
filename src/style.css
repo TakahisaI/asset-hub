@@ -1933,3 +1933,57 @@ summary {
 .storage-detail code {
   overflow-wrap: anywhere;
 }
+
+.profile-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.profile-summary b {
+  color: #242b26;
+  font-variant-numeric: tabular-nums;
+}
+.profile-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.render-profile {
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.render-profile h3 {
+  margin: 0 0 12px;
+}
+.profile-materials {
+  overflow-x: auto;
+}
+.profile-materials table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.profile-materials caption {
+  text-align: left;
+  margin: 12px 0;
+}
+.profile-materials th,
+.profile-materials td {
+  padding: 8px;
+  text-align: right;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.profile-materials th:first-child {
+  text-align: left;
+}
+.profile-diff dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  margin-top: 8px;
+}

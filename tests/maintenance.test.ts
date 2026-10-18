@@ -21,6 +21,8 @@ const temp = await mkdtemp(path.join(os.tmpdir(), 'asset-hub-maintenance-'));
 process.env.ASSET_HUB_ROOT = temp;
 const store = { ...(await import('../server/store.ts')), ...(await import('../server/blobs.ts')) };
 const { getCatalog } = await import('../server/catalog.ts');
+const { saveProfiles, profilePath } = await import('../server/profiles.ts');
+const { profileGlb } = await import('../tools/profile.ts');
 const { validateAssets } = await import('../tools/validate.ts');
 const { inspectStorage } = await import('../tools/storage.ts');
 const { syncLock } = await import('../tools/assetctl.ts');
@@ -84,6 +86,27 @@ test('validation continues through missing, tampered and malformed records witho
   );
   assert.equal(JSON.parse(await readFile(report, 'utf8')).summary.assets, 3);
   assert.deepEqual(await snapshot(), before);
+});
+
+test('catalog profiles preserve measured zeros, reflect refreshes and isolate corrupt measurements', async () => {
+  const asset = await register('test.profile');
+  assert.equal((await getCatalog()).assets[0].profile, null);
+  const profile = profileGlb(triangleGlb(false, 1));
+  await saveProfiles([profile]);
+  let catalog = await getCatalog();
+  assert.equal(catalog.assets[0].profile?.textures.decodedBytes, 0);
+  assert.equal(catalog.assets[0].profile?.glb.hash, asset.revision);
+  profile.scene.drawCalls = 7;
+  await saveProfiles([profile]);
+  catalog = await getCatalog();
+  assert.equal(catalog.assets[0].profile?.scene.drawCalls, 7);
+  await writeFile(profilePath(asset.revision), '{broken');
+  catalog = await getCatalog();
+  assert.equal(catalog.assets.length, 1);
+  assert.equal(catalog.assets[0].profile, null);
+  assert.ok(catalog.assets[0].profileError);
+  assert.equal(catalog.problems[0].file, `catalog/profiles/${asset.revision}.json`);
+  assert.equal((await store.getAsset(asset.id)).revision, asset.revision);
 });
 
 test('report paths protect catalog and blobs through case variants and file/directory aliases', async () => {

@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { categories, type CatalogAsset, type CatalogProblem } from './schema.ts';
 import { Detail } from './detail.tsx';
+import { ProfileSummary } from './render-profile.tsx';
 import { Modal } from './modal.tsx';
 import { fmt, mb, api, saveFile } from './ui.ts';
 import '@fontsource/dm-sans/400.css';
@@ -494,6 +495,7 @@ function App() {
                         {a.collections.join(' / ') || 'LOCAL ASSETS'}
                       </div>
                       <h3>{a.name}</h3>
+                      <ProfileSummary profile={a.profile} error={a.profileError} />
                       <div className="card-tags">
                         <span>{categories[a.category]}</span>
                         <span>

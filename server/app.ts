@@ -19,6 +19,7 @@ import { withBlob, blobAvailable } from './blobs.ts';
 import { inspectStorage } from '../tools/storage.ts';
 import { getCatalog } from './catalog.ts';
 import { createLock } from '../tools/assetctl.ts';
+import { getProfile } from './profiles.ts';
 import {
   root,
   storeDir,
@@ -145,8 +146,15 @@ export function createApp() {
           .filter((f) => f.name.endsWith('.json'))
           .map(async (f) => {
             const revision = await getRevision(a.id, f.name.slice(0, -5));
+            let profileError = '';
+            const profile = await getProfile(revision.revision).catch((error) => {
+              profileError = (error as Error).message;
+              return null;
+            });
             return {
               ...revision,
+              profile,
+              profileError,
               available: await blobAvailable(revision.revision),
               thumbnail: !!(await fileStat(path.join(storeDir, revision.revision + '.png'))),
             };
