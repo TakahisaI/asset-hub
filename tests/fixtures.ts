@@ -105,6 +105,106 @@ export function triangleGlb(external = false, scale = 1) {
   bin.copy(bytes, 28 + padded.length);
   return bytes;
 }
+// Two nodes instancing one two-primitive mesh: instances, materials and texture bytes are all distinct.
+export function profiledGlb() {
+  const chunks: Buffer[] = [];
+  const views: { buffer: number; byteOffset: number; byteLength: number }[] = [];
+  const accessors: Record<string, unknown>[] = [];
+  let offset = 0;
+  const append = (data: Buffer) => {
+    const padding = (4 - (offset % 4)) % 4;
+    if (padding) {
+      chunks.push(Buffer.alloc(padding));
+      offset += padding;
+    }
+    views.push({ buffer: 0, byteOffset: offset, byteLength: data.length });
+    chunks.push(data);
+    offset += data.length;
+    return views.length - 1;
+  };
+  const accessor = (data: Buffer, spec: Record<string, unknown>) => {
+    const index = accessors.length;
+    accessors.push({ bufferView: append(data), ...spec });
+    return index;
+  };
+  const floats = (values: number[]) => Buffer.from(new Float32Array(values).buffer);
+  const shorts = (values: number[]) => Buffer.from(new Uint16Array(values).buffer);
+  const position = accessor(floats([0, 0, 0, 1, 0, 0, 0, 1, 0]), {
+    componentType: 5126,
+    count: 3,
+    type: 'VEC3',
+    min: [0, 0, 0],
+    max: [1, 1, 0],
+  });
+  const normal = accessor(floats([0, 0, 1, 0, 0, 1, 0, 0, 1]), {
+    componentType: 5126,
+    count: 3,
+    type: 'VEC3',
+  });
+  const uv = accessor(floats([0, 0, 1, 0, 0, 1]), { componentType: 5126, count: 3, type: 'VEC2' });
+  const tangent = accessor(floats([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]), {
+    componentType: 5126,
+    count: 3,
+    type: 'VEC4',
+  });
+  const indices = accessor(shorts([0, 1, 2]), { componentType: 5123, count: 3, type: 'SCALAR' });
+  const otherIndices = accessor(shorts([0, 2, 1]), {
+    componentType: 5123,
+    count: 3,
+    type: 'SCALAR',
+  });
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const image = append(png);
+  const gltf = {
+    asset: { version: '2.0' },
+    scene: 0,
+    scenes: [{ nodes: [0, 1] }],
+    nodes: [{ mesh: 0 }, { mesh: 0, translation: [2, 0, 0] }],
+    meshes: [
+      {
+        primitives: [
+          {
+            attributes: { POSITION: position, NORMAL: normal, TEXCOORD_0: uv },
+            indices,
+            material: 0,
+          },
+          {
+            attributes: { POSITION: position, TANGENT: tangent },
+            indices: otherIndices,
+            material: 1,
+          },
+        ],
+      },
+    ],
+    materials: [{ name: 'wood', doubleSided: true, normalTexture: { index: 0 } }, { name: 'iron' }],
+    textures: [{ source: 0 }],
+    images: [{ mimeType: 'image/png', bufferView: image }],
+    buffers: [{ byteLength: offset }],
+    bufferViews: views,
+    accessors,
+  };
+  return rawGlb(gltf, Buffer.concat(chunks));
+}
+// Minimal GLB assembly for tests that need a specific malformed or unusual document.
+export function rawGlb(gltf: Record<string, unknown>, bin = Buffer.alloc(0)) {
+  const json = Buffer.from(JSON.stringify(gltf));
+  const padded = Buffer.alloc(Math.ceil(json.length / 4) * 4, 32);
+  json.copy(padded);
+  const bytes = Buffer.alloc(28 + padded.length + bin.length);
+  bytes.write('glTF');
+  bytes.writeUInt32LE(2, 4);
+  bytes.writeUInt32LE(bytes.length, 8);
+  bytes.writeUInt32LE(padded.length, 12);
+  bytes.writeUInt32LE(0x4e4f534a, 16);
+  padded.copy(bytes, 20);
+  bytes.writeUInt32LE(bin.length, 20 + padded.length);
+  bytes.writeUInt32LE(0x004e4942, 24 + padded.length);
+  bin.copy(bytes, 28 + padded.length);
+  return bytes;
+}
 export async function fixtureAsset(
   bytes = triangleGlb(),
   id = 'test.triangle',

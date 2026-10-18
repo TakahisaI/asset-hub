@@ -12,14 +12,45 @@ export type Gltf = {
     translation?: number[];
     rotation?: number[];
     scale?: number[];
-    extensions?: { KHR_lights_punctual?: { light: number } };
+    extensions?: {
+      KHR_lights_punctual?: { light: number };
+      EXT_mesh_gpu_instancing?: { attributes: Record<string, number> };
+    };
   }[];
   animations?: {
     name?: string;
     samplers: { input: number }[];
     channels: { target: { node?: number; path: string } }[];
   }[];
-  accessors?: { min?: number[]; max?: number[] }[];
+  accessors?: {
+    min?: number[];
+    max?: number[];
+    count?: number;
+    componentType?: number;
+    type?: string;
+    bufferView?: number;
+  }[];
+  bufferViews?: { buffer: number; byteLength: number; byteOffset?: number }[];
+  meshes?: {
+    primitives: {
+      attributes: Record<string, number>;
+      targets?: Record<string, number>[];
+      indices?: number;
+      material?: number;
+      mode?: number;
+    }[];
+  }[];
+  materials?: {
+    name?: string;
+    doubleSided?: boolean;
+    normalTexture?: unknown;
+    extensions?: {
+      KHR_materials_clearcoat?: { clearcoatNormalTexture?: unknown };
+      KHR_materials_anisotropy?: { anisotropyStrength?: number };
+    };
+  }[];
+  images?: { name?: string; mimeType?: string; bufferView?: number; uri?: string }[];
+  buffers?: { byteLength: number; uri?: string }[];
 };
 export function readGlb(bytes: Uint8Array): Gltf {
   const buf = Buffer.from(bytes);
@@ -34,6 +65,18 @@ export function readGlb(bytes: Uint8Array): Gltf {
   if (buf.readUInt32LE(16) !== 0x4e4f534a || length + 20 > buf.length)
     throw new Error('GLB JSONチャンクが壊れています');
   return JSON.parse(buf.toString('utf8', 20, 20 + length));
+}
+// The first buffer uses the BIN chunk when it has no URI.
+export function readGlbBinary(bytes: Uint8Array) {
+  const buf = Buffer.from(bytes);
+  let offset = 20 + buf.readUInt32LE(12);
+  while (offset + 8 <= buf.length) {
+    const length = buf.readUInt32LE(offset);
+    if (buf.readUInt32LE(offset + 4) === 0x004e4942)
+      return buf.subarray(offset + 8, offset + 8 + length);
+    offset += 8 + length;
+  }
+  return undefined;
 }
 export function describeGlb(bytes: Uint8Array) {
   const gltf = readGlb(bytes),
